@@ -33,7 +33,7 @@
 # works with everything *I* have access to, so I'm calling it good.
 #
 # For more information about the RPM file format, see the docs at rpm.org:
-#   http://www.rpm.org/max-rpm/s1-rpm-file-format-rpm-file-format.html
+#   http://ftp.rpm.org/max-rpm/s1-rpm-file-format-rpm-file-format.html
 # or the "Package File Format" section in the LSB (version 1.3.0 and later):
 #   http://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/swinstall.html
 
