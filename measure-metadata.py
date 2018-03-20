@@ -51,20 +51,17 @@ def analyze_sizedata(sizedata):
         tagcounts.update(tsd.keys())
     return tagsizes, tagcounts
 
-load_sizedata = True
-
-# yeah obviously this ain't gonna work on your system.
 # THIS IS A ROUGH HACK, MY FRIENDS.
-# You should run this with `ipython3 -i measure-metadata.py`.
 if __name__ == '__main__':
     import os
     import sys
     prog = os.path.basename(sys.argv[0])
-    usage = """usage: {0} generate SIZEFILE REPODIR [REPODIR...]
-                      {0} analyze SIZEFILE
-                      {0} interactive SIZEFILE""".format(prog)
+    usage = """
+usage: {0} generate SIZEFILE REPODIR [REPODIR...]
+       {0} analyze SIZEFILE
+       {0} interactive SIZEFILE""".strip().format(prog)
 
-    if len(sys.argv) == 1:
+    if len(sys.argv) <= 2:
         print(usage)
     elif sys.argv[1] == "generate":
         sizedata = dump_sizedata(sys.argv[3:], sys.argv[2])
@@ -74,12 +71,13 @@ if __name__ == '__main__':
         tagsizes, tagcounts = analyze_sizedata(sizedata)
         for tag, size in tagsizes.most_common():
             print("{:26}: {:5} times, {} bytes".format(tag, tagcounts[tag], size))
-
     elif sys.argv[1] == "interactive":
-        sizedata = json.load(gzip.open(sys.argv[2]))
-        tagsizes, tagcounts = analyze_sizedata(sizedata)
         import IPython
-        IPython.start_ipython(argv=[])
+        print("loading sizedata from {}...".format(sys.argv[2]))
+        sizedata = json.load(gzip.open(sys.argv[2]))
+        print("generating tagsizes, tagcounts...")
+        tagsizes, tagcounts = analyze_sizedata(sizedata)
+        IPython.embed()
     else:
         print("error: unknown command '{}'".format(sys.argv[1]))
         print(usage)
