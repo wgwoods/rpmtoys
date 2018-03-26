@@ -21,7 +21,7 @@ import os
 import struct
 from collections import Counter
 
-from .tags import SCALAR_TAGS
+from .tags import SCALAR_TAGS, BIN_TAGS, getname
 
 # --- Okay, here's some machinery to parse an RPM by hand.
 # --- For more info about the header data format, see:
@@ -60,6 +60,7 @@ def iter_unpack_c_string(store, offset, count=1):
             start = n+1
             count -= 1
         n += 1
+
 
 # Run through the section's "tags", parse the corresponding values, and
 # return a gnarly tuple (tag,typ,off,size,realsize,val) for each one.
@@ -141,6 +142,23 @@ class rpmsection(object):
     def rawval(self, tag):
         off, size = self.tagrange[tag]
         return self.store[off:off+size]
+
+    def jsonval(self, tag):
+        from base64 import b64encode
+        val = self.tagval[tag]
+        typ = self.tagtype[tag]
+        if typ < 6:  # int arrays
+            return val
+        elif tag in BIN_TAGS:  # binary blobs
+            return b64encode(val).decode('ascii', errors='ignore')
+        elif type(val) == bytes:  # plain string
+            return val.decode('utf-8', errors='backslashreplace')
+        elif type(val) == tuple and type(val[0]) == bytes:  # string array
+            return tuple(v.decode('utf-8', errors='backslashreplace') for v in val)
+            return val[0] if tag in SCALAR_TAGS else val
+        else:
+            msg = "unhandled value type for '{}':{}".format(getname(tag),val)
+            raise ValueError(msg)
 
 
 # Our low-level equivalent to rpm.hdr - hold all the RPM's header data.

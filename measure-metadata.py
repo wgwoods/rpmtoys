@@ -20,36 +20,47 @@
 import json
 import gzip
 
-from rpmtoys.tags import getname
+from rpmtoys.tags import getname, SCALAR_TAGS, BIN_TAGS
 from rpmtoys.hdr import iter_repo_rpms, rpmhdr
-from collections import Counter
+from rpmtoys.progress import progress
+from collections import Counter, defaultdict
+
+
+def rpm_basename(rpmfn):
+    return rpmfn[rpmfn.rfind('/')+1:rpmfn.rfind('.')]
+
 
 def dump_sizedata(repo_paths, outfile="sizedata.json.gz"):
-    rpmlist = list(iter_repo_rpms(repo_paths))
     sizedata = dict()
-    for n, rpmfn in enumerate(rpmlist):
-        if n % 100 == 0:
-            print("reading {:6}/{:6} ({:4.1f}%)".format(n,len(rpmlist),n/len(rpmlist)*100.0), end='\r', flush=True) # NOQA
+    valcount = defaultdict(Counter)
+    for rpmfn in progress(iter_repo_rpms(repo_paths), itemfmt=rpm_basename):
         r = rpmhdr(rpmfn)
         sizedata[r.envra] = [
                 [r.sig.size, r.hdr.size, r.payloadsize],
                 [(tag, off, size, r.hdr.tagsize[tag])
                     for tag, (off, size) in r.hdr.tagrange.items()]
         ]
+        for t in r.hdr.tagval:
+            if t >= 1000 and t not in BIN_TAGS:
+                v = r.hdr.jsonval(t)
+                valcount[t].update(v if type(v) == tuple else [v])
     print("\ndumping to {}...".format(outfile))
-    json.dump(sizedata, gzip.open(outfile, 'wt'))
+    outdata = [sizedata,
+               [(t, vc.most_common()) for t,vc in valcount.items()]]
+    json.dump(outdata, gzip.open(outfile, 'wt'))
     print("done!")
-    return sizedata
+    return outdata
 
 
 def analyze_sizedata(sizedata):
     tagsizes = Counter()
     tagcounts = Counter()
-    for (s,h,p),ts in sizedata.values():
-        tsd = Counter({getname(t):rs for t,o,s,rs in ts})
+    for p, ts in sizedata.values():
+        tsd = Counter({getname(t): rs for t, o, s, rs in ts})
         tagsizes.update(tsd)
         tagcounts.update(tsd.keys())
     return tagsizes, tagcounts
+
 
 # THIS IS A ROUGH HACK, MY FRIENDS.
 if __name__ == '__main__':
@@ -64,17 +75,18 @@ usage: {0} generate SIZEFILE REPODIR [REPODIR...]
     if len(sys.argv) <= 2:
         print(usage)
     elif sys.argv[1] == "generate":
-        sizedata = dump_sizedata(sys.argv[3:], sys.argv[2])
+        sizedata, valcount = dump_sizedata(sys.argv[3:], sys.argv[2])
     elif sys.argv[1] == "analyze":
-        sizedata = json.load(gzip.open(sys.argv[2]))
+        sizedata, valcount = json.load(gzip.open(sys.argv[2]))
         # this could be nicer..
         tagsizes, tagcounts = analyze_sizedata(sizedata)
         for tag, size in tagsizes.most_common():
-            print("{:26}: {:5} times, {} bytes".format(tag, tagcounts[tag], size))
+            count = tagcounts[tag]
+            print("{:26}: {:5} times, {} bytes".format(tag, count, size))
     elif sys.argv[1] == "interactive":
         import IPython
-        print("loading sizedata from {}...".format(sys.argv[2]))
-        sizedata = json.load(gzip.open(sys.argv[2]))
+        print("loading (sizedata, valcount) from {}...".format(sys.argv[2]))
+        sizedata, valcount = json.load(gzip.open(sys.argv[2]))
         print("generating tagsizes, tagcounts...")
         tagsizes, tagcounts = analyze_sizedata(sizedata)
         IPython.embed()
