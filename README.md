@@ -23,6 +23,14 @@ parsing and RPM tag metadata! Fun!
 A script to examine actual RPM headers and determine the amount of space used
 by each individual tag.
 
+## `dnf-count-rpm-words.py`
+
+Use DNF to fetch a list of all the RPM names in 'fedora' and 'updates', split
+them up into meaningful "words", and dump some CSV data about those words.
+
+This isn't particularly useful, but it's part of a blog post I'm writing and
+it's also a nice simple example of using DNF directly in Python.
+
 ## `LICENSE`
 
 Check the individual files for their licenses. If any file is somehow missing

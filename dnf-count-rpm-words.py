@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 
 import dnf
-import json
 from collections import Counter, defaultdict
 
 
@@ -159,6 +158,8 @@ subpkgs = defaultdict(list)
 namewords = list()
 wordnames = defaultdict(set)
 for pkg in sack.query():
+    if pkg.name in names:
+        continue
     name = pkg.name
     src = pkg.source_name
     words = wordsplit(name)
@@ -180,11 +181,10 @@ suffixes = Counter(nw[-1] for nw in namewords if len(nw) > 1)
 # How many different source packages - i.e. spec files - use each word?
 # (this reduces noise from things like texlive...)
 srcwords = Counter({w:len(set(names[n] for n in wordnames[w])) for w in words})
-prefixes = Counter({w:len(set(names[n] for n in wordnames[w] if n.startswith(w+'-'))) for w in words})
-suffixes = Counter({w:len(set(names[n] for n in wordnames[w] if n.endswith('-'+w))) for w in words})
 
-commonwords = Counter({w:srcwords[w] for cat in (srcwords, prefixes, suffixes)
-                                     for w,c in cat.most_common(100)})
+# A wordlist that includes every word in the top 100 of each category
+commonwords = set(w for cat in (words, srcwords, prefixes, suffixes)
+                    for w,c in cat.most_common(100))
 
 # bonus stuff for finding words like "coin-or"
 def iterpairs(iterable):
@@ -195,21 +195,22 @@ def iterpairs(iterable):
         left = right
 pairs = Counter(p for nw in namewords for p in iterpairs(nw))
 
+def dumpcsv(fobj, wordlist, key=srcwords.get):
+    fobj.write("word,specfiles,rpms,as prefix,as suffix,meaning\n")
+    for word in sorted(wordlist, key=key, reverse=True):
+        fobj.write("{},{},{},{},{},{}\n".format(word,
+                                                srcwords.get(word, 0),
+                                                words.get(word, 0),
+                                                prefixes.get(word, 0),
+                                                suffixes.get(word, 0),
+                                                all_words.get(word, '')))
+
+
 # run with "ipython3 -i dnf-count-rpm-words.py" to do interactive exploration!
 if __name__ == '__main__':
     with open("rpm-name-word-counts.csv", 'wt') as fobj:
         print("writing {}...".format(fobj.name))
-        fobj.write("word,pkgs,prefix,suffix,meaning\n")
-        for word, count in srcwords.most_common():
-            fobj.write("{},{},{},{},{}\n".format(word, count,
-                                                 prefixes.get(word, 0),
-                                                 suffixes.get(word, 0),
-                                                 all_words.get(word, '')))
+        dumpcsv(fobj, words)
     with open("rpm-name-word-counts-common.csv", 'wt') as fobj:
         print("writing {}...".format(fobj.name))
-        fobj.write("word,pkgs,prefix,suffix,meaning\n")
-        for word,count in commonwords.most_common():
-            fobj.write("{},{},{},{},{}\n".format(word, count,
-                                                 prefixes.get(word, 0),
-                                                 suffixes.get(word, 0),
-                                                 all_words.get(word, '')))
+        dumpcsv(fobj, commonwords)
