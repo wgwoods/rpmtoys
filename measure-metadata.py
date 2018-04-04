@@ -20,7 +20,7 @@
 import json
 import gzip
 
-from rpmtoys.tags import getname, SCALAR_TAGS, BIN_TAGS
+from rpmtoys.tags import getname, BIN_TAGS
 from rpmtoys.hdr import iter_repo_rpms, rpmhdr
 from rpmtoys.progress import progress
 from collections import Counter, defaultdict
@@ -46,10 +46,19 @@ def dump_sizedata(repo_paths, outfile="sizedata.json.gz"):
                 valcount[t].update(v if type(v) == tuple else [v])
     print("\ndumping to {}...".format(outfile))
     outdata = [sizedata,
-               [(t, vc.most_common()) for t,vc in valcount.items()]]
+               [(t, vc.most_common()) for t, vc in valcount.items()]]
     json.dump(outdata, gzip.open(outfile, 'wt'))
     print("done!")
     return outdata
+
+
+def load_sizedata(infile):
+    sizedata, valcount_list = json.load(gzip.open(infile))
+    valcount = dict()
+    while valcount_list:
+        t, v = valcount_list.pop()
+        valcount[t] = Counter(dict(v))
+    return sizedata, valcount
 
 
 def analyze_sizedata(sizedata):
@@ -60,7 +69,6 @@ def analyze_sizedata(sizedata):
         tagsizes.update(tsd)
         tagcounts.update(tsd.keys())
     return tagsizes, tagcounts
-
 
 # THIS IS A ROUGH HACK, MY FRIENDS.
 if __name__ == '__main__':
@@ -77,7 +85,7 @@ usage: {0} generate SIZEFILE REPODIR [REPODIR...]
     elif sys.argv[1] == "generate":
         sizedata, valcount = dump_sizedata(sys.argv[3:], sys.argv[2])
     elif sys.argv[1] == "analyze":
-        sizedata, valcount = json.load(gzip.open(sys.argv[2]))
+        sizedata, valcount = load_sizedata(sys.argv[2])
         # this could be nicer..
         tagsizes, tagcounts = analyze_sizedata(sizedata)
         for tag, size in tagsizes.most_common():
@@ -86,7 +94,7 @@ usage: {0} generate SIZEFILE REPODIR [REPODIR...]
     elif sys.argv[1] == "interactive":
         import IPython
         print("loading (sizedata, valcount) from {}...".format(sys.argv[2]))
-        sizedata, valcount = json.load(gzip.open(sys.argv[2]))
+        sizedata, valcount = load_sizedata(sys.argv[2])
         print("generating tagsizes, tagcounts...")
         tagsizes, tagcounts = analyze_sizedata(sizedata)
         IPython.embed()
