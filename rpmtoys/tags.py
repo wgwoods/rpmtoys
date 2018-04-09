@@ -22,14 +22,28 @@ from .tagtbl import tagtbl
 TagInfo = namedtuple("TagInfo", "name num vtype rtype ext")
 
 info = [TagInfo(*t) for t in tagtbl]
+
 byname = dict()
 bynum = dict()
 for t in info:
-    byname[t.name] = t
+    byname[t.name.upper()] = t
     # longest name wins - see rpm/lib/tagname.c:tagCmpValue
     if t.num not in bynum or len(bynum[t.num].name) < len(t.name):
         bynum[t.num] = t
 
+# for easy lookups: tagname[1000], tagnum.EPOCH, groupname.scriptlet
+class TagNameDict(dict):
+    def __getitem__(self, key):
+        if type(key) is str:
+            key = key.upper()
+        return dict.__getitem__(self, key)
+
+    def __getattr__(self, name):
+        return self[name]
+
+
+tagname = {t.num:t.name for t in bynum.values()}
+tagnum = TagNameDict({t.name.upper():t.num for t in info})
 
 def getname(tagnum):
     if tagnum not in bynum:
@@ -46,8 +60,13 @@ def byprefix(pfx):
 
 # --- Below here we have a bunch of tag metadata (meta-metadata?)
 
-BIN_TAGS = frozenset(t.num for t in info if t.vtype == 'BIN')
-SCALAR_TAGS = frozenset(t.num for t in info if t.rtype == 'SCALAR')
+# Tags that have binary values
+BIN_TAGS = {t.num for t in info if t.vtype == 'BIN'}
+# Tags that have non-array values
+SCALAR_TAGS = {t.num for t in info if t.rtype == 'SCALAR'}
+# Tags that have array values with one item per file
+PER_FILE_TAGS = {1028, 1030, 1033, 1034, 1035, 1036, 1037, 1039, 1040, 1045,
+                 1095, 1096, 1097, 1116, 1117}
 
 # Group dependencies by type. Note that the names are a _prefix_ for a bunch of
 # tags that get zipped together inside RPM to create each dependency "item".
@@ -72,35 +91,38 @@ SCRIPTLET_NAMES = {n: byprefix(n)
                    for sn in SCRIPTLET_GROUPS.values() for n in sn}
 
 # Lovingly handcrafted tag groupings.
-# TODO: Size (1009), Archivesize (1046), Longsize (5009)
-# TODO: Policy/Contexts junk
-TAG_GROUPS = {
-    "FILEDIGESTS": {1035},
-    "FILENAMES":   {1116, 1117, 1118},
+# This covers every tag known to rpm-4.14.1. Whee!
+tag_group = TagNameDict({
+    "FILEDIGESTS": {1035, 5011},
+    "FILENAMES":   {1116, 1117, 1118, 5000},
     "FILESTAT":    {1028, 1029, 1030, 1031, 1032, 1033, 1034, 1036, 1039, 1040,
-                    1095, 1096, 5010},
+                    1095, 1096, 5008, 5010, 5045},
     "FILECLASS":   {1141, 1142},
-    "FILEDEPENDS": {1143, 1144, 1145},
-    "RPMMD":       {1064, 1094, 5018, 5062},
+    "FILEDEPENDS": {1143, 1144, 1145, 5001, 5002},
+    "SELINUX":     {1147, 1148, 1149, 1150, 5030, 5031, 5032, 5033},
+    "RPMMD":       {61, 63, 64, 100, 1064, 1094, 5017, 5018, 5062},
     "RPMFILEMD":   {1045, 1097, 1098, 1099, 1140, 1037},
-    "BUILDMD":     {1132, 1122, 1044, 1007, 1006, 1022, 1021, 1106},
+    "BUILDMD":     {1132, 1122, 1044, 1007, 1006, 1022, 1021, 1106, 1146},
     "DISTROMD":    {1010, 1011, 1015, 1123, 1155},
     "PACKAGEINFO": {1000, 1001, 1002, 1003, 1004, 1005, 1014, 1016, 1020,
-                    5012, 5034},
-    "PAYLOADMD":   {1124, 1125, 1126, 5092, 5093},
+                    5012, 5019, 5034},
+    "PAYLOADMD":   {1009, 1046, 1124, 1125, 1126, 5009, 5092, 5093},
     "IMAGES":      {1012, 1013, 1043},
     "NEVRAS":      {1196, 5013, 5014, 5015, 5016},
     "SRPM":        {1018, 1019, 1051, 1052, 1059, 1060, 1061, 1062, 1089},
-    "RPMDB":       {1008, 1127, 1128, 1129}, # TODO: there's definitely more
+    "RPMDB":       {1008, 1127, 1128, 1129, 1195, 5040},
     "DEPRECATED":  {1027, 1119, 1120, 1121, 5007},
+    "SIGNATURES":  {62, 257, 259, 261, 262, 266, 267, 268, 269, 270, 271, 273,
+                    5090, 5091},
     "CHANGELOG":   byprefix("Changelog"),
     "DEPENDENCY":  byprefix(DEPENDENCY_NAMES),
     "SCRIPTLET":   byprefix(SCRIPTLET_NAMES),
-}
+})
 
-PER_FILE_TAGS = {1028, 1030, 1033, 1034, 1035, 1036, 1037, 1039, 1040, 1045,
-                 1095, 1096, 1097, 1116, 1117}
+groupname = {t:name for (name, grp) in tag_group.items() for t in grp}
+
+KNOWN_TAGS = {n for g in tag_group.values() for n in g}
 
 # Confirm that each tag only belongs to one group
-assert(len(set(i for s in TAG_GROUPS.values() for i in s)) ==
-       len(list(i for s in TAG_GROUPS.values() for i in s)))
+assert(len(set(i for s in tag_group.values() for i in s)) ==
+       len(list(i for s in tag_group.values() for i in s)))
