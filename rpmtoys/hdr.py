@@ -195,6 +195,18 @@ class rpmhdr(object):
         e = self.hdr.tagval.get(1003)
         self.envra = nvra if e is None else str(e)+':'+nvra
 
+    def iterfiles(self):
+        tv = self.hdr.tagval
+        dirname = tv.get(1118, [])
+        for diridx, basename in zip(tv.get(1116, []), tv.get(1117, [])):
+            yield (dirname[diridx]+basename).decode('utf-8')
+
+    def files(self):
+        return list(self.iterfiles())
+
+    def nfiles(self):
+        return len(self.hdr.tagval.get(1118, []))
+
     # for convenience and _selftest(), get rpm-python's `hdr` for this RPM
     def _get_rpm_hdr(self):
         import rpm
