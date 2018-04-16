@@ -174,6 +174,7 @@ class rpmsection(object):
 
 # Our low-level equivalent to rpm.hdr - hold all the RPM's header data.
 class rpmhdr(object):
+    __ts = None   # Use a single rpm.ts for every instance, I don't care
     def __init__(self, filename):
         self.name = filename
         with open(filename, 'rb') as fobj:
@@ -209,13 +210,19 @@ class rpmhdr(object):
 
     # for convenience and _selftest(), get rpm-python's `hdr` for this RPM
     def _get_rpm_hdr(self):
-        import rpm
-        ts = rpm.ts("/", rpm.RPMVSF_NOHDRCHK |
-                         rpm._RPMVSF_NODIGESTS |
-                         rpm._RPMVSF_NOSIGNATURES)
         with open(self.name, 'rb') as fobj:
-            hdr = ts.hdrFromFdno(fobj.fileno())
+            hdr = self._ts.hdrFromFdno(fobj.fileno())
         return hdr
+
+    @property
+    def _ts(self):
+        if self.__class__.__ts is None:
+            import rpm
+            flags = (rpm.RPMVSF_NOHDRCHK |
+                     rpm._RPMVSF_NODIGESTS |
+                     rpm._RPMVSF_NOSIGNATURES)
+            self.__class__.__ts = rpm.ts("/", flags)
+        return self.__class__.__ts
 
     # Get the value of a given tag and munge it up to look like RPM's version.
     # Mostly useful for _selftest().
