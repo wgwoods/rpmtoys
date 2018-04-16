@@ -133,33 +133,44 @@ class rpmsection(object):
         self.tagrange = dict()
         self.tagsize = dict()
         self.tagval = dict()
+        self.encoding = 'utf-8'
         for tag, typ, off, size, rsize, val in iter_parse_tags(tagents, store):
             self.tagtype[tag] = typ
             self.tagrange[tag] = (off, size)
             self.tagsize[tag] = rsize
             self.tagval[tag] = val
+            if tag == 5062:
+                self.encoding = val.decode('utf-8')
 
     def rawval(self, tag):
         off, size = self.tagrange[tag]
         return self.store[off:off+size]
 
-    def jsonval(self, tag):
-        from base64 import b64encode
+    def getval(self, tag, default=None):
+        if tag not in self.tagval:
+            return default
         val = self.tagval[tag]
         typ = self.tagtype[tag]
+        enc = self.encoding
         if typ < 6:  # int arrays
             return val
         elif tag in BIN_TAGS:  # binary blobs
-            return b64encode(val).decode('ascii', errors='ignore')
+            return bytes(val)
         elif type(val) == bytes:  # plain string
-            return val.decode('utf-8', errors='backslashreplace')
+            return val.decode(enc, errors='backslashreplace')
         elif type(val) == tuple and type(val[0]) == bytes:  # string array
-            return tuple(v.decode('utf-8', errors='backslashreplace') for v in val)
+            return tuple(v.decode(enc, errors='backslashreplace') for v in val)
             return val[0] if tag in SCALAR_TAGS else val
         else:
             msg = "unhandled value type for '{}':{}".format(getname(tag),val)
             raise ValueError(msg)
 
+    def jsonval(self, tag):
+        from base64 import b64encode
+        val = self.getval(tag)
+        if type(val) == bytes:
+            val = b64encode(val).decode('ascii', errors='ignore')
+        return val
 
 # Our low-level equivalent to rpm.hdr - hold all the RPM's header data.
 class rpmhdr(object):
