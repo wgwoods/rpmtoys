@@ -21,7 +21,8 @@ import json
 import gzip
 
 from rpmtoys.tags import getname, BIN_TAGS
-from rpmtoys.hdr import iter_repo_rpms, rpmhdr
+from rpmtoys.repo import iter_repo_rpms
+from rpmtoys.hdr import rpmhdr
 from rpmtoys.progress import progress
 from collections import Counter, defaultdict
 

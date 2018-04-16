@@ -279,12 +279,3 @@ class rpmhdr(object):
             checked.add(t)
 
         return checked
-
-
-# fun fact: this is waaayyy faster than reading repodata
-def iter_repo_rpms(paths):
-    for path in paths:
-        for top, dirs, files in os.walk(path):
-            for f in files:
-                if f.endswith(".rpm"):
-                    yield os.path.join(top, f)
