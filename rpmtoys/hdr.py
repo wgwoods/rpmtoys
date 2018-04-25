@@ -206,7 +206,7 @@ class rpmhdr(object):
         return list(self.iterfiles())
 
     def nfiles(self):
-        return len(self.hdr.tagval.get(1118, []))
+        return len(self.hdr.tagval.get(1116, []))
 
     # for convenience and _selftest(), get rpm-python's `hdr` for this RPM
     def _get_rpm_hdr(self):
