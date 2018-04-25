@@ -21,7 +21,7 @@ import os
 import struct
 from collections import Counter
 
-from .tags import SCALAR_TAGS, BIN_TAGS, getname
+from .tags import SCALAR_TAGS, BIN_TAGS
 
 # --- Okay, here's some machinery to parse an RPM by hand.
 # --- For more info about the header data format, see:
@@ -73,10 +73,10 @@ def iter_unpack_c_string(store, offset, count=1):
 #  val: the actual parsed data. the type depends on the tag, but should be
 #       one of `int`, `[int]`, `str`, `[str]`, `bytes`.
 #       NOTE: we actually get `bytes` for `str`, and we _could_ decode() them
-#             all using the value of tag 100 (HEADERI18NTABLE), buuuut the
-#             official rpm-python module doesn't bother so why should we?
+#             using the value of tag 5062 (ENCODING), buuuut the official
+#             rpm-python module doesn't bother, so we'll sort that out later
 fmt_type_char = 'xCBHIL'
-def iter_parse_tags(tags, store):
+def iter_parse_tags(tags, store): # noqa: C901
     used = Counter()
     i18ncnt = 1
     for tag, typ, off, cnt in tags:
@@ -123,8 +123,11 @@ def iter_parse_tags(tags, store):
         yield (tag, typ, off, size, realsize, val)
 
 
-# Hold either the Signature or Header section data
 class rpmsection(object):
+    '''
+    Hold RPM Signature/Header Section data (rpmhdr.hdr, rpmhdr.sig)
+    This object is mostly good for raw access to the contained data.
+    '''
     def __init__(self, fobj, pad=False):
         tagents, store = read_section_header(fobj, pad)
         self.size = 16 + 16*len(tagents) + len(store)
@@ -139,14 +142,26 @@ class rpmsection(object):
             self.tagrange[tag] = (off, size)
             self.tagsize[tag] = rsize
             self.tagval[tag] = val
-            if tag == 5062:
+            if tag == 5062:  # ENCODING
                 self.encoding = val.decode('utf-8')
 
     def rawval(self, tag):
+        '''Return the raw value for the given tag, as bytes.'''
         off, size = self.tagrange[tag]
         return self.store[off:off+size]
 
     def getval(self, tag, default=None):
+        '''
+        Return the value for the given tag, decoded to its expected type:
+
+        * String values are decoded using the value of self.encoding, which is
+          set to the value of the ENCODING tag if encountered (utf-8 otherwise).
+        * Tags with binary values return a bytes() object.
+        * Tags listed as SCALAR in tagtbl are returned as a single value of the
+          appropriate type. Everything else is returned as a tuple of values.
+
+        returns default if tag is not found in this section.
+        '''
         if tag not in self.tagval:
             return default
         val = self.tagval[tag]
@@ -162,19 +177,22 @@ class rpmsection(object):
             return tuple(v.decode(enc, errors='backslashreplace') for v in val)
             return val[0] if tag in SCALAR_TAGS else val
         else:
-            msg = "unhandled value type for '{}':{}".format(getname(tag),val)
+            msg = "unhandled value (typ:{} tag:{}): {}".format(typ, tag, val)
             raise ValueError(msg)
 
-    def jsonval(self, tag):
+    def jsonval(self, tag, default=None):
+        '''
+        Return a json-compatible value for the given tag.
+        (Same as getval(), but binary blobs are b64encoded into ascii strings.)
+        '''
         from base64 import b64encode
         val = self.getval(tag)
         if type(val) == bytes:
             val = b64encode(val).decode('ascii', errors='ignore')
         return val
 
-# Our low-level equivalent to rpm.hdr - hold all the RPM's header data.
+# Our equivalent to rpm.hdr - hold all the RPM's header data.
 class rpmhdr(object):
-    __ts = None   # Use a single rpm.ts for every instance, I don't care
     def __init__(self, filename):
         self.name = filename
         with open(filename, 'rb') as fobj:
@@ -188,19 +206,18 @@ class rpmhdr(object):
         self.payloadsize = size - self.headersize
 
         # For convenience's sake, construct the package's ENVRA as a str
-        tv = self.hdr.tagval
-        # these four are required, so it's OK to throw an exception if missing
-        n, v, r, a = [tv[t].decode() for t in (1000, 1001, 1002, 1022)]
+        e,n,v,r,a = [self.hdr.getval(t) for t in (1003,1000,1001,1002,1022)]
         nvra = "{}-{}-{}.{}".format(n, v, r, a)
         # EPOCH is an int, but it's also optional (and 0 != None)
-        e = self.hdr.tagval.get(1003)
         self.envra = nvra if e is None else str(e)+':'+nvra
 
     def iterfiles(self):
-        tv = self.hdr.tagval
-        dirname = tv.get(1118, [])
-        for diridx, basename in zip(tv.get(1116, []), tv.get(1117, [])):
-            yield (dirname[diridx]+basename).decode('utf-8')
+        '''Yield each of the (complete) filenames in this RPM.'''
+        dirindexes = self.hdr.tagval.get(1116, [])
+        basenames = self.hdr.tagval.get(1117, [])
+        dirnames = self.hdr.tagval.get(1118, [])
+        for diridx, basename in zip(dirindexes, basenames):
+            yield (dirnames[diridx]+basename).decode('utf-8')
 
     def files(self):
         return list(self.iterfiles())
@@ -214,6 +231,7 @@ class rpmhdr(object):
             hdr = self._ts.hdrFromFdno(fobj.fileno())
         return hdr
 
+    # Share a single rpm.ts between all instances of this class
     @property
     def _ts(self):
         if self.__class__.__ts is None:
@@ -223,6 +241,7 @@ class rpmhdr(object):
                      rpm._RPMVSF_NOSIGNATURES)
             self.__class__.__ts = rpm.ts("/", flags)
         return self.__class__.__ts
+    __ts = None
 
     # Get the value of a given tag and munge it up to look like RPM's version.
     # Mostly useful for _selftest().
@@ -237,7 +256,7 @@ class rpmhdr(object):
         if tag not in SCALAR_TAGS and type(val) != list:
             val = [val]
 
-        # ..except this. bluhhh RPM why are you like this.
+        # ..except for ENCODING. bluhhh RPM why are you like this.
         if tag == 5092 and type(val) == list and len(val) == 1:
             val = val[0]
 
@@ -252,10 +271,28 @@ class rpmhdr(object):
 
         return val
 
-    # Compare our tagval data to what RPM thinks.
+    # Return the expected in-header size of this value, given its RPM vtype
+    @staticmethod
+    def _expsize(val, typ):
+        isarray = (type(val) in (list, tuple))
+        cnt = len(val) if isarray else 1
+        if typ == 0:
+            return 0
+        elif typ <= 5:
+            return struct.calcsize(fmt_type_char[typ]) * cnt
+        elif typ == 6 or typ == 8 or typ == 9:
+            return sum(len(s)+1 for s in val) if isarray else len(val)+1
+        elif typ == 7:
+            return len(val)
+
     # I ran this against every package in F27 GOLD + updates and it passed,
     # so I'm pretty sure this parser works OK!
     def _selftest(self):
+        '''
+        Compare our data to what the official RPM module thinks.
+        Return the set of tags that were checked.
+        Raises an AssertionError if any checks fail.
+        '''
         checked = set()
 
         import rpm
@@ -271,18 +308,15 @@ class rpmhdr(object):
         for t in hdr.keys():
             # skip private tags (1046=RPMVERSION)
             if t < 1000 or t == 1046:
-                checked.add(t)
                 continue
 
-            typ = self.hdr.tagtype.get(t)
+            # Do we also have this tag?
             assert t in self.hdr.tagtype, terr(t, "not in hdr")
-            assert typ in range(0, 10), terr(t, "unknown type: {}", typ)
 
-            off, size = self.hdr.tagrange[t]
+            # Do the types and values match?
+            typ = self.hdr.tagtype.get(t)
             myval = self._get_rpm_val(t)
             rpmval = hdr[t]
-
-            # check value
             if typ == 9:
                 assert type(myval) == list, terr(t, "I18NTABLE isn't a list")
                 assert rpmval in myval, terr(t, "value {} not in table: {}", rpmval, myval)
@@ -292,20 +326,12 @@ class rpmhdr(object):
                            type(myval).__name__, type(rpmval).__name__)
                 assert (myval == rpmval), terr(t, "{} != {}", myval, rpmval)
 
-            # check size
-            if typ == 0:
-                expsize = 0
-            elif typ <= 5:
-                expsize = struct.calcsize(fmt_type_char[typ]) * (len(myval) if type(myval) == list else 1)
-            elif typ == 6 or typ == 8 or typ == 9:
-                expsize = sum(len(s)+1 for s in myval) if type(myval) == list else len(myval) + 1
-            elif typ == 7:
-                expsize = len(myval)
-            else:
-                expsize = None
+            # Does the measured size match the expected size?
+            off, size = self.hdr.tagrange[t]
+            expsize = self._expsize(myval, typ)
             assert size == expsize, terr(t, "size mismatch: {} != {}", size, expsize)
 
-            # done! add it to the list
+            # OK! Add it to the list!
             checked.add(t)
 
         return checked

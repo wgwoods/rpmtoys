@@ -46,10 +46,10 @@ tagname = {t.num:t.name for t in bynum.values()}
 tagnum = TagNameDict({t.name.upper():t.num for t in info})
 
 def getname(tagnum):
-    if tagnum not in bynum:
+    try:
+        return tagname[tagnum]
+    except KeyError:
         return str(tagnum)
-    else:
-        return bynum[tagnum].name
 
 
 def byprefix(pfx):
