@@ -120,7 +120,7 @@ def iter_parse_tags(tags, store): # noqa: C901
         # update which bytes we've counted
         used.update(range(off, off+size))
 
-        yield (tag, typ, off, size, realsize, val)
+        yield (tag, typ, off, cnt, size, realsize, val)
 
 
 class rpmsection(object):
@@ -136,10 +136,12 @@ class rpmsection(object):
         self.tagrange = dict()
         self.tagsize = dict()
         self.tagval = dict()
+        self.tagcnt = dict()
         self.encoding = 'utf-8'
-        for tag, typ, off, size, rsize, val in iter_parse_tags(tagents, store):
+        for tag, typ, off, cnt, size, rsize, val in iter_parse_tags(tagents, store):
             self.tagtype[tag] = typ
             self.tagrange[tag] = (off, size)
+            self.tagcnt[tag] = cnt
             self.tagsize[tag] = rsize
             self.tagval[tag] = val
             if tag == 5062:  # ENCODING
