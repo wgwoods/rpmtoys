@@ -20,7 +20,7 @@
 import json
 import gzip
 
-from rpmtoys.tags import getname, BIN_TAGS
+from rpmtoys.tags import Tag, BIN_TAGS
 from rpmtoys.repo import iter_repo_rpms
 from rpmtoys.hdr import rpmhdr
 from rpmtoys.progress import progress
@@ -66,7 +66,7 @@ def analyze_sizedata(sizedata):
     tagsizes = Counter()
     tagcounts = Counter()
     for p, ts in sizedata.values():
-        tsd = Counter({getname(t): rs for t, o, s, rs in ts})
+        tsd = Counter({Tag(t): rs for t, o, s, rs in ts})
         tagsizes.update(tsd)
         tagcounts.update(tsd.keys())
     return tagsizes, tagcounts
@@ -91,14 +91,12 @@ usage: {0} generate SIZEFILE REPODIR [REPODIR...]
         tagsizes, tagcounts = analyze_sizedata(sizedata)
         for tag, size in tagsizes.most_common():
             count = tagcounts[tag]
-            print("{:26}: {:5} times, {} bytes".format(tag, count, size))
+            print("{:26}: {:5} times, {} bytes".format(tag.shortname, count, size))
     elif sys.argv[1] == "interactive":
-        import IPython
         print("loading (sizedata, valcount) from {}...".format(sys.argv[2]))
         sizedata, valcount = load_sizedata(sys.argv[2])
         print("generating tagsizes, tagcounts...")
         tagsizes, tagcounts = analyze_sizedata(sizedata)
-        IPython.embed()
     else:
         print("error: unknown command '{}'".format(sys.argv[1]))
         print(usage)

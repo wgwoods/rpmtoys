@@ -16,60 +16,105 @@
 #
 # Author: Will Woods <wwoods@redhat.com>
 
-from collections import namedtuple
+from enum import IntEnum
 from .tagtbl import tagtbl
 
-TagInfo = namedtuple("TagInfo", "name num vtype rtype ext")
+class VType(IntEnum):
+    '''RPM Value Type - see rpm/lib/rpmtag.h:rpmTagType_e'''
+    NULL = 0
+    CHAR = 1
+    INT8 = 2
+    INT16 = 3
+    INT32 = 4
+    INT64 = 5
+    STRING = 6
+    BIN = 7
+    STRING_ARRAY = 8
+    I18NSTRING = 9
+    MAX = 9
+    MASK = 0x0000ffff
 
-info = [TagInfo(*t) for t in tagtbl]
+class RType(IntEnum):
+    '''RPM Return Type - see rpm/lib/rpmtag.h:rpmTagReturnType_e'''
+    ANY = 0
+    SCALAR = 0x00010000
+    ARRAY = 0x00020000
+    MAPPING = 0x00040000
+    MASK = 0xffff0000
 
-byname = dict()
-bynum = dict()
-for t in info:
-    byname[t.name.upper()] = t
-    # longest name wins - see rpm/lib/tagname.c:tagCmpValue
-    if t.num not in bynum or len(bynum[t.num].name) < len(t.name):
-        bynum[t.num] = t
+class TagEnum(IntEnum):
+    '''
+    RPM tag info - see rpm/lib/tagname.c:headerTagTableEntry_s
+    All members are subclasses of 'int', with the following extra attributes:
 
-# for easy lookups: tagname[1000], tagnum.EPOCH, groupname.scriptlet
-class TagNameDict(dict):
-    def __getitem__(self, key):
-        if type(key) is str:
-            key = key.upper()
-        return dict.__getitem__(self, key)
+    name: the symbol name for this tag
+    shortname: human-readable short name for this tag
+    vtype: expected type of this tag's value(s)
+    rtype: expected "return type" of this tag: SCALAR, ARRAY, or MAPPING
+    extension: bool; is this tag a non-standard "extension"?
+    '''
+    def __new__(cls, info):
+        name, num, vtype, rtype, ext = info
+        tag = int.__new__(cls, num)
+        tag._value_ = num
+        tag.shortname = name  # non-upper() string
+        tag.vtype = VType[vtype]
+        tag.rtype = RType[rtype]
+        tag.extension = bool(ext)
+        return tag
 
-    def __getattr__(self, name):
-        return self[name]
+    @classmethod
+    def getname(self, num):
+        try:
+            return self(num).name
+        except ValueError:
+            return str(num)
 
+    @classmethod
+    def byprefix(self, pfx):
+        if type(pfx) == str:
+            return {t for t in Tag if t.name.startswith(pfx.upper())}
+        else:
+            return {t for p in pfx for t in self.byprefix(p)}
 
-tagname = {t.num:t.name for t in bynum.values()}
-tagnum = TagNameDict({t.name.upper():t.num for t in info})
-
-def getname(tagnum):
-    try:
-        return tagname[tagnum]
-    except KeyError:
-        return str(tagnum)
-
-
-def byprefix(pfx):
-    if type(pfx) == str:
-        return {t.num for t in info if t.name.startswith(pfx)}
-    else:
-        return {t.num for t in info if any(t.name.startswith(p) for p in pfx)}
+# Fill in the "Tag" enum from tagtbl data.
+# NOTE: The enum member names are all uppercase versions of the "shortname"
+# (he human-readable version of the name - see rpm:lib/tagname.c
+# NOTE: we sort tagtbl so that the longest name comes first for each numeric
+# value, because the longest name is always the canonical name.
+# (rpm/lib/tagname.c:tagCmpValue() is where that gets done in RPM.)
+Tag = TagEnum('Tag', ((t[0].upper(), t) for t in
+                      sorted(tagtbl, key=lambda t:len(t[0]), reverse=True)))
 
 # --- Below here we have a bunch of tag metadata (meta-metadata?)
 
 # Tags that have binary values
-BIN_TAGS = {t.num for t in info if t.vtype == 'BIN'}
+BIN_TAGS = {t for t in Tag if t.vtype == VType.BIN}
 # Tags that have non-array values
-SCALAR_TAGS = {t.num for t in info if t.rtype == 'SCALAR'}
+SCALAR_TAGS = {t for t in Tag if t.rtype == RType.SCALAR}
 # Tags that have array values with one item per file
-PER_FILE_TAGS = {1028, 1030, 1033, 1034, 1035, 1036, 1037, 1039, 1040, 1045,
-                 1095, 1096, 1097, 1116, 1117}
+PER_FILE_TAGS = {Tag.FILESIZES,
+                 Tag.FILEMODES,
+                 Tag.FILERDEVS,
+                 Tag.FILEMTIMES,
+                 Tag.FILEDIGESTS,
+                 Tag.FILELINKTOS,
+                 Tag.FILEFLAGS,
+                 Tag.FILEUSERNAME,
+                 Tag.FILEGROUPNAME,
+                 Tag.FILEVERIFYFLAGS,
+                 Tag.FILEDEVICES,
+                 Tag.FILEINODES,
+                 Tag.FILELANGS,
+                 Tag.DIRINDEXES,
+                 Tag.BASENAMES,
+                 Tag.FILECOLORS,
+                 Tag.FILECLASS}
+# TODO: FILEDEPENDSX, FILEDEPENDSN, FILECAPS?
 
 # Group dependencies by type. Note that the names are a _prefix_ for a bunch of
 # tags that get zipped together inside RPM to create each dependency "item".
+# See the DepInfo table in deps, which actually lists the exact tags used.
 DEPENDENCY_GROUPS = {
     "BASIC": ["Provide", "Require", "Conflict", "Obsolete"],
     "SOFT": ["Enhance", "Recommend", "Suggest", "Supplement"],
@@ -85,17 +130,17 @@ SCRIPTLET_GROUPS = {
 }
 
 # map each name "stem" to corresponding set of tag numbers
-DEPENDENCY_NAMES = {n: byprefix(n)
+DEPENDENCY_NAMES = {n: Tag.byprefix(n)
                     for gn in DEPENDENCY_GROUPS.values() for n in gn}
-SCRIPTLET_NAMES = {n: byprefix(n)
+SCRIPTLET_NAMES = {n: Tag.byprefix(n)
                    for sn in SCRIPTLET_GROUPS.values() for n in sn}
 
 # Lovingly handcrafted tag groupings.
 # This covers every tag known to rpm-4.14.1. Whee!
-tag_group = TagNameDict({
+tag_group = {name:{Tag(t) for t in grp} for (name, grp) in {
     "FILEDIGESTS": {1035, 5011},
     "FILENAMES":   {1116, 1117, 1118, 5000},
-    "FILESTAT":    {1028, 1029, 1030, 1031, 1032, 1033, 1034, 1036, 1039, 1040,
+    "FILESTAT":    {1028, 1029, 1030, 1033, 1034, 1036, 1039, 1040,
                     1095, 1096, 5008, 5010, 5045},
     "FILECLASS":   {1141, 1142},
     "FILEDEPENDS": {1143, 1144, 1145, 5001, 5002},
@@ -114,14 +159,13 @@ tag_group = TagNameDict({
     "DEPRECATED":  {1027, 1119, 1120, 1121, 5007},
     "SIGNATURES":  {62, 257, 259, 261, 262, 266, 267, 268, 269, 270, 271, 273,
                     5090, 5091},
-    "CHANGELOG":   byprefix("Changelog"),
-    "DEPENDENCY":  byprefix(DEPENDENCY_NAMES),
-    "SCRIPTLET":   byprefix(SCRIPTLET_NAMES),
-})
+    "CHANGELOG":   Tag.byprefix("Changelog"),
+    "DEPENDENCY":  Tag.byprefix(DEPENDENCY_NAMES),
+    "SCRIPTLET":   Tag.byprefix(SCRIPTLET_NAMES),
+}.items()}
 
+# Map {int/Tag:groupname}
 groupname = {t:name for (name, grp) in tag_group.items() for t in grp}
-
-KNOWN_TAGS = {n for g in tag_group.values() for n in g}
 
 # Confirm that each tag only belongs to one group
 assert(len(set(i for s in tag_group.values() for i in s)) ==
