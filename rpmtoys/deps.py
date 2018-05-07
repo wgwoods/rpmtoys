@@ -1,7 +1,7 @@
-# Dependency metadata.
+# rpmtoys.deps - Dependency metadata.
 
 from collections import namedtuple
-from enum import IntFlag, auto
+from enum import IntFlag
 
 # These are from depinfo_s and depTypes[] in rpm/lib/rpmds.c
 DepInfo = namedtuple("DepInfo", "name char nametag vertag flagtag idxtag")
@@ -23,41 +23,40 @@ deptypes = [
     DepInfo('Oldenhances',      '?', 1159, 1160, 1161, None),
 ]
 
-depinfo = {d.name:d for d in deptypes}
+depinfo = {ident:d for d in deptypes for ident in (d.name, d.char)}
 char2name = {d.char:d.name for d in deptypes if d.char != '?'}
 
-# This comes from rpmsenseFlags_e in rpm/lib/rpmds.h
-class Flags(IntFlag):
-    ANY = 0
-    unused_1 = auto()
-    LESS = auto()
-    GREATER = auto()
-    EQUAL = auto()
-    unused_4 = auto()
-    POSTTRANS = auto()
-    PREREQ = auto()
-    PRETRANS = auto()
-    INTERP = auto()
-    SCRIPT_PRE = auto()
-    SCRIPT_POST = auto()
-    SCRIPT_PREUN = auto()
-    SCRIPT_POSTUN = auto()
-    SCRIPT_VERIFY = auto()
-    FIND_REQUIRES = auto()
-    FIND_PROVIDES = auto()
-    TRIGGERIN = auto()
-    TRIGGERUN = auto()
-    TRIGGERPOSTUN = auto()
-    MISSINGOK = auto()
-    unused_20 = auto()
-    unused_21 = auto()
-    unused_22 = auto()
-    unused_23 = auto()
-    RPMLIB = auto()
-    TRIGGERPREIN = auto()
-    KEYRING = auto()
-    unused_27 = auto()
-    CONFIG = auto()
+# This comes from rpmsenseFlags in rpm/lib/rpmds.h
+class DepFlags(IntFlag):
+    # pylama:ignore=E221
+    ANY           = 0
+    UNUSED_SERIAL = (1 << 0)
+    LESS          = (1 << 1)
+    GREATER       = (1 << 2)
+    EQUAL         = (1 << 3)
+    # bit 4 unused
+    POSTTRANS     = (1 << 5)
+    PREREQ        = (1 << 6)
+    PRETRANS      = (1 << 7)
+    INTERP        = (1 << 8)
+    SCRIPT_PRE    = (1 << 9)
+    SCRIPT_POST   = (1 << 10)
+    SCRIPT_PREUN  = (1 << 11)
+    SCRIPT_POSTUN = (1 << 12)
+    SCRIPT_VERIFY = (1 << 13)
+    FIND_REQUIRES = (1 << 14)
+    FIND_PROVIDES = (1 << 15)
+    TRIGGERIN     = (1 << 16)
+    TRIGGERUN     = (1 << 17)
+    TRIGGERPOSTUN = (1 << 18)
+    MISSINGOK     = (1 << 19)
+    # bit 20-23 unused
+    RPMLIB        = (1 << 24)
+    TRIGGERPREIN  = (1 << 25)
+    KEYRING       = (1 << 26)
+    # bit 27 unused
+    CONFIG        = (1 << 28)
+    # bit 29-31 unused
 
-    SENSEMASK = unused_1 | LESS | GREATER | EQUAL
+    SENSEMASK = UNUSED_SERIAL | LESS | GREATER | EQUAL
     TRIGGER = TRIGGERPREIN | TRIGGERIN | TRIGGERUN | TRIGGERPOSTUN
