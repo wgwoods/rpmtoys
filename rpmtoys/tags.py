@@ -109,30 +109,31 @@ PER_FILE_TAGS = {Tag.FILESIZES,
                  Tag.DIRINDEXES,
                  Tag.BASENAMES,
                  Tag.FILECOLORS,
-                 Tag.FILECLASS}
-# TODO: FILEDEPENDSX, FILEDEPENDSN, FILECAPS?
+                 Tag.FILECLASS,
+                 Tag.FILEDEPENDSX,
+                 Tag.FILEDEPENDSN,
+                 Tag.FILECAPS}
 
 # Group dependencies by type. Note that the names are a _prefix_ for a bunch of
 # tags that get zipped together inside RPM to create each dependency "item".
-# See the DepInfo table in deps, which actually lists the exact tags used.
+# (See the DepInfo table in deps, which actually lists the exact tags used.)
 DEPENDENCY_GROUPS = {
     "BASIC": ["Provide", "Require", "Conflict", "Obsolete"],
     "SOFT": ["Enhance", "Recommend", "Suggest", "Supplement"],
-    "OLD": ["Oldenhance", "Oldsuggest"],
-    "SPECIAL": ["Order", "Patches"],
+    "ORDER": ["Order"],
+    "TRIGGER": ["Trigger", "Filetrigger", "Transfiletrigger"],
+    "OLD": ["Oldenhance", "Oldsuggest", "Patches"],
 }
 # Same deal as above, but for scriptlets.
 SCRIPTLET_GROUPS = {
     "BASIC": ["Prein", "Postin", "Preun", "Postun", "Pretrans", "Posttrans"],
-    "TRIGGER": ["Trigger"],
-    "FILETRIGGER": ["Filetrigger", "Transfiletrigger"],
     "VERIFY": ["Verify"],
 }
 
 # map each name "stem" to corresponding set of tag numbers
-DEPENDENCY_NAMES = {n: Tag.byprefix(n)
+DEPENDENCY_NAMES = {n:Tag.byprefix(n)
                     for gn in DEPENDENCY_GROUPS.values() for n in gn}
-SCRIPTLET_NAMES = {n: Tag.byprefix(n)
+SCRIPTLET_NAMES = {n:Tag.byprefix(n)
                    for sn in SCRIPTLET_GROUPS.values() for n in sn}
 
 # Lovingly handcrafted tag groupings.
