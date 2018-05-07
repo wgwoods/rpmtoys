@@ -49,6 +49,8 @@ class Progress(object):
         self._ilen = 0
 
     def _fmt_pct(self):
+        if not self.total:
+            return " ---%"
         pct = self.count/float(self.total)
         return "{:5.1%}".format(pct) if pct < 0.9995 else " 100%"
 
@@ -56,7 +58,7 @@ class Progress(object):
         return self._fmt.format(count=self.count,
                                 total=self.total,
                                 prefix=self.prefix,
-                                item=self._item,
+                                item=self._item or "---",
                                 tlen=self._tlen,
                                 ilen=self._ilen,
                                 pct=self._fmt_pct())[:self.maxlen]
