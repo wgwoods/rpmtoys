@@ -1,4 +1,4 @@
-from .hdr import rpmhdr
+from .hdr import rpmhdr, pkgtup
 from .tags import Tag
 from .file import Attrs, VerifyAttrs
 from .deps import DepFlags, depinfo, deptypes
@@ -6,7 +6,7 @@ from .repo import iter_repo_rpms
 from .progress import progress
 
 __all__ = ['rpm', 'Tag', 'Attrs', 'VerifyAttrs', 'DepFlags', 'progress',
-           'iter_repo_rpms']
+           'iter_repo_rpms', 'pkgtup']
 
 from collections import namedtuple, OrderedDict
 from itertools import zip_longest

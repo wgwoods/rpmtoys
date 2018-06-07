@@ -19,7 +19,7 @@
 
 import os
 import struct
-from collections import Counter
+from collections import Counter, namedtuple
 
 from .tags import SCALAR_TAGS, BIN_TAGS
 
@@ -193,6 +193,27 @@ class rpmsection(object):
             val = b64encode(val).decode('ascii', errors='ignore')
         return val
 
+class pkgtup(namedtuple('pkgtup', 'name arch epoch ver rel')):
+    def envra(self):
+        # EPOCH is an int, but it's also optional (and 0 != None)
+        if self.epoch is None:
+            return "{0.name}-{0.ver}-{0.rel}.{0.arch}".format(self)
+        else:
+            return "{0.epoch}:{0.name}-{0.ver}-{0.rel}.{0.arch}".format(self)
+
+    __str__ = envra
+
+    @classmethod
+    def fromenvra(cls, envra):
+        epoch, c, nvra = envra.partition(':')
+        if not c:
+            nvra = epoch
+            epoch = None
+        nvr, _, arch = nvra.rpartition('.')
+        nv, _, rel = nvr.rpartition('-')
+        name, _, ver = nv.rpartition('-')
+        return cls(name, arch, epoch, ver, rel)
+
 # Our equivalent to rpm.hdr - hold all the RPM's header data.
 class rpmhdr(object):
     def __init__(self, filename):
@@ -207,11 +228,11 @@ class rpmhdr(object):
         assert (self.headersize == 0x60+self.sig.size+self.hdr.size)
         self.payloadsize = size - self.headersize
 
-        # For convenience's sake, construct the package's ENVRA as a str
+        # Grab the pkgtup values
         e,n,v,r,a = [self.hdr.getval(t) for t in (1003,1000,1001,1002,1022)]
-        nvra = "{}-{}-{}.{}".format(n, v, r, a)
-        # EPOCH is an int, but it's also optional (and 0 != None)
-        self.envra = nvra if e is None else str(e)+':'+nvra
+        self.pkgtup = pkgtup(n, a, e, v, r)
+        # For convenience's sake, save the package's ENVRA as a str
+        self.envra = self.pkgtup.envra()
 
     def iterfiles(self):
         '''Yield each of the (complete) filenames in this RPM.'''
