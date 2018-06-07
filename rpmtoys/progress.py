@@ -2,6 +2,7 @@
 
 import sys
 from time import monotonic
+from shutil import get_terminal_size
 
 
 def progress(iterable,
@@ -29,7 +30,7 @@ class Progress(object):
                  out=sys.stdout):
         self.total = total
         self.prefix = prefix
-        self.maxlen = maxlen
+        self.maxlen = get_terminal_size((maxlen, None)).columns
         self.interval = interval
         self.flush = flush
         self.out = out
