@@ -3,10 +3,11 @@
 import json
 import gzip
 
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 from rpmtoys import rpm, Tag, Attrs, VerifyAttrs
-from rpmtoys import iter_repo_rpms, progress, rpmfile, rpmstat
+from rpmtoys import iter_repo_rpms, rpmfile, rpmstat, pkgtup
+from rpmtoys.progress import progress, Progress
 
 # RPM per-file data!!
 # The following are obsolete in current RPMs:
@@ -126,17 +127,16 @@ class idmap(dict):
     def strdict(self):
         return {k: self[k] for k in self if type(k) != int}
 
-# lil self-test / seed value
+# lil self-test
 assert idmap(root=0)[0] == 'root'
 
-
 def dump_payloaddata(repo_paths, outfile="payloaddata.json.gz"):
-    uids = idmap()
-    gids = idmap()
-    files = dict()
+    uids = idmap(root=0)
+    gids = idmap(root=0)
+    rpms = dict()
     for rpmfn in progress(iter_repo_rpms(repo_paths), itemfmt=rpm_basename):
         envra, payload = payloadinfo(rpmfn)
-        files[envra] = []
+        rpms[envra] = []
         for inode_ents in payload:
             f, links = combine_hardlinks(inode_ents)
             # find or allocate uid/gid
@@ -145,30 +145,59 @@ def dump_payloaddata(repo_paths, outfile="payloaddata.json.gz"):
             # fix up the stat
             f = f._replace(stat=f.stat._replace(user=uid, group=gid))
             # add it to the list
-            files[envra].append((f, links))
+            rpms[envra].append((f, links))
     print("dumping {}...".format(outfile))
     with gzip.open(outfile, 'wt') as outf:
-        json.dump(dict(uid=uids.strdict(),
-                       gid=gids.strdict(),
-                       files=files), outf)
-    return uids, gids, files
+        o = OrderedDict()
+        u = uids.strdict()
+        g = gids.strdict()
+        o['counts'] = {'uid':len(u), 'gid':len(g), 'rpms':len(rpms)}
+        o['uid'] = u
+        o['gid'] = g
+        o['rpms'] = [{'envra':envra, 'count':len(files), 'files':files}
+                     for envra,files in rpms.items()]
+        json.dump(o, outf)
+    return uids, gids, rpms
+
+
+class RPMCountLoader(object):
+    '''An object for doing progress reporting while loading payloaddata'''
+    def __init__(self, total, prefix=''):
+        self.prog = Progress(total=total, prefix=prefix)
+
+    def hook(self, o):
+        keys = set(o.keys())
+        if keys == {'envra', 'count', 'files'}:
+            self.prog.item(o['envra'])
+            o = (o['envra'],
+                 [expand_hardlinks(mkrpmfile(f), ln) for f, ln in o['files']])
+        elif keys == {'counts', 'uid', 'gid', 'rpms'}:
+            self.prog.end()
+        return o
 
 
 def load_payloaddata(datafile):
-    # TODO: probably this doesn't convert real efficiently..
-    # TODO: progress reporting?
-    data = json.load(gzip.open(datafile))
+    data = None
+    print("loading {}...".format(datafile))
+    with gzip.open(datafile, mode='rt') as inf:
+        # Read the first chunk of the file and find the counts
+        head = inf.read(4096)
+        counts = json.loads(head[head.find('{',1):head.find('}',1)+1])
+        # Back to the beginning so we can read the whole deal
+        inf.seek(0)
+        # set up progress / object conversion and read the datafile
+        rc = RPMCountLoader(counts['rpms'], prefix='  ')
+        data = json.load(gzip.open(datafile), object_hook=rc.hook)
     uids = idmap(data['uid'])
     gids = idmap(data['gid'])
-    files = {envra:tuple(expand_hardlinks(mkrpmfile(fileinfo), links) for fileinfo, links in payload)
-             for envra, payload in data['files'].items()}
-    return uids, gids, files
+    rpms = dict(data['rpms'])
+    return uids, gids, rpms
 
 if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
         print("TODO USAGE")
     elif sys.argv[1] == "interactive":
-        pass
+        pd = {f:load_payloaddata(f) for f in sys.argv[2:]}
     elif sys.argv[1] == "generate":
         uids, gids, files = dump_payloaddata(sys.argv[3:], sys.argv[2])
