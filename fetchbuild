@@ -1,0 +1,74 @@
+#!/usr/bin/python3
+# fetchbuild - fetch entire builds from koji
+
+DISTS = [".fc26", ".fc27", ".fc28"]
+ARCHES = ["x86_64", "noarch"]
+
+import os
+import koji
+from koji_cli.lib import download_file, _format_size
+
+def rpmpath(rpminfo):
+    return "{buildname}/{version}/{release}/{arch}/{name}-{version}-{release}.{arch}.rpm".format(**rpminfo)
+
+class KojiWrapper(object):
+    def __init__(self, configname='koji'):
+        self.config = koji.read_config(configname)
+        self.session = koji.ClientSession(self.config['server'],
+                                          koji.grab_session_options(self.config))
+        self.pkgurl = self.config['topurl'].rstrip('/')+'/packages/'
+
+    def pkgid(self, pkgname):
+        return self.session.getPackageID(pkgname)
+
+    def listbuilds(self, pkgname):
+        pkgid = self.pkgid(pkgname)
+        if pkgid is None:
+            raise ValueError("Unknown package {}".format(pkgname))
+        return sorted(self.session.listBuilds(state=1, packageID=pkgid),
+                      key=lambda b: b['completion_ts'])
+
+    def listrpms(self, build, arches=None):
+        rpms = self.session.listRPMs(buildID=build['build_id'], arches=arches)
+        for r in rpms:
+            r['buildname'] = build['name']
+        return rpms
+
+    def download_rpms(self, rpms, quiet=False, noprogress=False):
+        count = len(rpms)
+        for num,rpm in enumerate(rpms):
+            relpath = rpmpath(rpm)
+            size = rpm['size']
+            try:
+                existing_size = os.stat(relpath).st_size
+            except OSError:
+                existing_size = None
+            if existing_size and existing_size == size:
+                print("{} already downloaded, skipping".format(relpath))
+            else:
+                download_file(self.pkgurl+relpath, relpath, size=count, num=num+1,
+                              quiet=quiet, noprogress=noprogress)
+
+if __name__ == '__main__':
+    import sys
+    k = KojiWrapper()
+    dl_rpms = []
+    packages = sys.argv[1:]
+    print("Finding builds for ({}), ({})".format(",".join(DISTS), ",".join(ARCHES)))
+    for pkg in packages:
+        try:
+            builds = k.listbuilds(pkg)
+        except ValueError:
+            print("Skipping unknown package '{}'".format(pkg))
+            continue
+
+        print("Matching {} builds:".format(pkg))
+        for build in builds:
+            if any(build['release'].endswith(d) for d in DISTS):
+                print(" {version}-{release}".format(**build), end="", flush=True)
+                dl_rpms += k.listrpms(build, arches=ARCHES)
+        print()
+
+    dl_size = sum(r['size'] for r in dl_rpms)
+    print("Downloading {} rpms ({})".format(len(dl_rpms),_format_size(dl_size)))
+    k.download_rpms(dl_rpms)
