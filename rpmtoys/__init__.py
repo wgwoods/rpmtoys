@@ -51,6 +51,9 @@ class rpm(rpmhdr):
     '''
     A slightly higher-level interface for inspecting RPM headers.
     '''
+    def __repr__(self):
+        return '<{}.{}({!r})>'.format(self.__module__, self.__class__.__name__, self.name)
+
     def getval(self, tag, default=None):
         return self.hdr.getval(tag, default)
 
@@ -59,6 +62,15 @@ class rpm(rpmhdr):
 
     def zipvals(self, *tags):
         return tuple(zip_longest(*(self.getval(t,[]) for t in tags)))
+
+    def buildtup(self):
+        src = self.getval(Tag.SOURCERPM)
+        if src is None:
+            return None
+        if src.endswith('.rpm'):
+            src = src[:-4]
+        return pkgtup.fromenvra(src)._replace(epoch=self.pkgtup.epoch,
+                                              arch=self.pkgtup.arch)
 
     def nfiles(self):
         return self.getcount(Tag.BASENAMES)

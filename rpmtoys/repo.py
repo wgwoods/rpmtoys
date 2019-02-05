@@ -22,6 +22,8 @@ import os
 
 # fun fact: this is waaayyy faster than reading repodata
 def iter_repo_rpms(paths):
+    if type(paths) == str:
+        paths = [paths]
     for path in paths:
         for top, dirs, files in os.walk(path):
             for f in files:
