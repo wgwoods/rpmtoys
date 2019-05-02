@@ -8,8 +8,14 @@ from .progress import progress
 __all__ = ['rpm', 'Tag', 'Attrs', 'VerifyAttrs', 'DepFlags', 'progress',
            'iter_repo_rpms', 'pkgtup']
 
-from collections import namedtuple, OrderedDict
+from collections import namedtuple, OrderedDict, Counter
 from itertools import zip_longest
+
+# optional external dependency
+try:
+    from .payload import libarchive_payload_reader
+except ImportError:
+    libarchive_payload_reader = None
 
 # (mode, ino, dev, username, groupname, size, mtime)
 # ..it's *close* to python's os.stat() output, at least.
@@ -45,7 +51,7 @@ extras._tags = extras(*extra_tags.values())
 
 # And here's the big fancy thing that holds all per-file RPM data
 rpmfile = namedtuple("rpmfile",
-                     "name digest stat fclass flags verifyflags depends extra")
+                     "name digest stat nlink fclass flags verifyflags depends extra")
 
 class rpm(rpmhdr):
     '''
@@ -53,6 +59,22 @@ class rpm(rpmhdr):
     '''
     def __repr__(self):
         return '<{}.{}({!r})>'.format(self.__module__, self.__class__.__name__, self.name)
+
+    def dump(self):
+        return {
+            # TODO: add lead
+            #'lead': self.lead._asdict(),
+            'sig': {SigTag(t).shortname:self.sig.getval(t)
+                    for t in self.sig.tagval},
+            'hdr': {Tag(t).shortname:self.hdr.getval(t)
+                    for t in self.hdr.tagval},
+        }
+
+    payload_reader = libarchive_payload_reader
+    def payload_iter(self):
+        with self.payload_reader() as payload:
+            for entry in payload:
+                yield entry
 
     def getval(self, tag, default=None):
         return self.hdr.getval(tag, default)
@@ -106,6 +128,15 @@ class rpm(rpmhdr):
         for s in self.zipvals(*rpmstat._tags):
             yield rpmstat(*s)
 
+    def iternlink(self):
+        # It's super cool how RPM doesn't actually use FILENLINKS so we have to
+        # figure out what files are actually hardlinks by making two passes
+        # through FILEINODES
+        inodes = self.getval(Tag.FILEINODES, [])
+        nlinks = Counter(inodes)
+        for ino in inodes:
+            yield nlinks[ino]
+
     def iterfextras(self):
         for ex in self.zipvals(*extras._tags):
             yield {k:v for k,v in zip(extras._fields, ex) if v}
@@ -131,6 +162,7 @@ class rpm(rpmhdr):
         return (rpmfile(*f) for f in zip_longest(self.iterfiles(),
                                                  self.getval(Tag.FILEDIGESTS),
                                                  self.iterfstat(),
+                                                 self.iternlink(),
                                                  self.iterfclass(),
                                                  map(Attrs, self.getval(Tag.FILEFLAGS)),
                                                  map(VerifyAttrs, self.getval(Tag.FILEVERIFYFLAGS)),

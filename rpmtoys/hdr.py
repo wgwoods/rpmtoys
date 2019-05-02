@@ -263,6 +263,13 @@ class rpmhdr(object):
     def nfiles(self):
         return len(self.hdr.tagval.get(1116, []))
 
+    def open_payload(self):
+        fobj = open(self.name, 'rb')
+        fobj.seek(self.headersize)
+        fobj.format = self.hdr.getval(1124)
+        fobj.compressor = self.hdr.getval(1125)
+        return fobj
+
     # for convenience and _selftest(), get rpm-python's `hdr` for this RPM
     def _get_rpm_hdr(self):
         with open(self.name, 'rb') as fobj:
