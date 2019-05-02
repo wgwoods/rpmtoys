@@ -1,5 +1,5 @@
 from .hdr import rpmhdr, pkgtup
-from .tags import Tag
+from .tags import Tag, SigTag
 from .file import Attrs, VerifyAttrs
 from .deps import DepFlags, depinfo, deptypes
 from .repo import iter_repo_rpms

@@ -19,20 +19,28 @@
 
 import os
 import struct
-from collections import Counter, namedtuple
+from collections import Counter, namedtuple, OrderedDict
 
-from .tags import SCALAR_TAGS, BIN_TAGS
+# These are sets of (integer) tag numbers that let us figure out whether a
+# given value should be treated as binary vs. string or array vs. scalar.
+# Just to make things interesting, some tag numbers have different meanings and
+# values in the Signature Header - for example, 1004 and 1005 are normally
+# strings (Summary and Description) but in the Signature header they're binary
+# (MD5 and GPG). So we have to have different lookup tables. Thanks, RPM.
+from .tags import SCALAR_TAGS, BIN_TAGS, SIG_BIN_TAGS
 
 # --- Okay, here's some machinery to parse an RPM by hand.
 # --- For more info about the header data format, see:
 # ---   http://ftp.rpm.org/max-rpm/s1-rpm-file-format-rpm-file-format.html
 # ---   http://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/swinstall.html
 
+# TODO: do I want to use this, or should we just completely ignore the lead..
+rpmlead = namedtuple('rpmlead', 'magic major minor type arch name os sig res')
 
 # Read the obsolete "Lead" structure
+lead_struct = struct.Struct("! 4s B B h h 66s h h 16s")
 def read_lead(fobj):
-    lead_s = struct.Struct("! 4s B B h h 66s h h 16s")
-    return lead_s.unpack(fobj.read(lead_s.size))
+    return rpmlead(*lead_struct.unpack(fobj.read(lead_struct.size)))
 
 
 # Read an RPM "Header Section Header" and return (tags, store):
@@ -122,6 +130,9 @@ def iter_parse_tags(tags, store): # noqa: C901
 
         yield (tag, typ, off, cnt, size, realsize, val)
 
+# TODO: use this instead of 5 different dicts?
+class TagEntry(namedtuple("TagEntry", "tag type offset count size realsize value")):
+    pass
 
 class rpmsection(object):
     '''
@@ -130,15 +141,19 @@ class rpmsection(object):
     '''
     def __init__(self, fobj, pad=False):
         tagents, store = read_section_header(fobj, pad)
+        self.is_sig = bool(pad)
+        self._bin_tags = (SIG_BIN_TAGS if self.is_sig else BIN_TAGS)
         self.size = 16 + 16*len(tagents) + len(store)
         self.store = store
-        self.tagtype = dict()
-        self.tagrange = dict()
-        self.tagsize = dict()
-        self.tagval = dict()
-        self.tagcnt = dict()
+        self.tagents = OrderedDict()
+        self.tagtype = OrderedDict()
+        self.tagrange = OrderedDict()
+        self.tagsize = OrderedDict()
+        self.tagval = OrderedDict()
+        self.tagcnt = OrderedDict()
         self.encoding = 'utf-8'
         for tag, typ, off, cnt, size, rsize, val in iter_parse_tags(tagents, store):
+            self.tagents[tag] = TagEntry(tag, typ, off, cnt, size, rsize, val)
             self.tagtype[tag] = typ
             self.tagrange[tag] = (off, size)
             self.tagcnt[tag] = cnt
@@ -171,7 +186,7 @@ class rpmsection(object):
         enc = self.encoding
         if typ < 6:  # int arrays
             return val
-        elif tag in BIN_TAGS:  # binary blobs
+        elif tag in self._bin_tags:  # binary blobs
             return bytes(val)
         elif type(val) == bytes:  # plain string
             return val.decode(enc, errors='backslashreplace')

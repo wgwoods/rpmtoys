@@ -18,6 +18,7 @@
 
 from enum import IntEnum
 from .tagtbl import tagtbl
+from .sigtagtbl import sigtagtbl
 
 class VType(IntEnum):
     '''RPM Value Type - see rpm/lib/rpmtag.h:rpmTagType_e'''
@@ -86,12 +87,18 @@ class TagEnum(IntEnum):
 Tag = TagEnum('Tag', ((t[0].upper(), t) for t in
                       sorted(tagtbl, key=lambda t:len(t[0]), reverse=True)))
 
+# Similarly, construct SigTag from sigtagtbl data.
+SigTag = TagEnum('SigTag', ((t[0].upper(), t) for t in
+                   sorted(sigtagtbl, key=lambda t:len(t[0]), reverse=True)))
+
 # --- Below here we have a bunch of tag metadata (meta-metadata?)
 
 # Tags that have binary values
 BIN_TAGS = {t for t in Tag if t.vtype == VType.BIN}
+SIG_BIN_TAGS = {t for t in SigTag if t.vtype == VType.BIN}
 # Tags that have non-array values
 SCALAR_TAGS = {t for t in Tag if t.rtype == RType.SCALAR}
+SIG_SCALAR_TAGS = {t for t in SigTag if t.rtype == RType.SCALAR}
 # Tags that have array values with one item per file
 PER_FILE_TAGS = {Tag.FILESIZES,
                  Tag.FILEMODES,
@@ -113,6 +120,7 @@ PER_FILE_TAGS = {Tag.FILESIZES,
                  Tag.FILEDEPENDSX,
                  Tag.FILEDEPENDSN,
                  Tag.FILECAPS}
+# TODO: FILESIGNATURES?
 
 # Group dependencies by type. Note that the names are a _prefix_ for a bunch of
 # tags that get zipped together inside RPM to create each dependency "item".
