@@ -34,13 +34,15 @@ from .tags import SCALAR_TAGS, BIN_TAGS, SIG_BIN_TAGS
 # ---   http://ftp.rpm.org/max-rpm/s1-rpm-file-format-rpm-file-format.html
 # ---   http://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/swinstall.html
 
-# TODO: do I want to use this, or should we just completely ignore the lead..
-rpmlead = namedtuple('rpmlead', 'magic major minor type arch name os sig res')
-
-# Read the obsolete "Lead" structure
-lead_struct = struct.Struct("! 4s B B h h 66s h h 16s")
-def read_lead(fobj):
-    return rpmlead(*lead_struct.unpack(fobj.read(lead_struct.size)))
+# Obsolete "Lead" structure
+class rpmlead(namedtuple('rpmlead', 'magic major minor type arch name os sig res')):
+    _struct = struct.Struct("! 4s B B h h 66s h h 16s")
+    @classmethod
+    def _unpack(cls, data):
+        return cls(*cls._struct.unpack(data))
+    @classmethod
+    def _read(cls, fobj):
+        return cls._unpack(fobj.read(cls._struct.size))
 
 
 # Read an RPM "Header Section Header" and return (tags, store):
@@ -164,6 +166,61 @@ class rpmsection(object):
             self.tagval[tag] = val
             if tag == 5062:  # ENCODING
                 self.encoding = val.decode('utf-8')
+        self.regiontag = self.verify_region()
+
+    def pack(self):
+        '''Pack this section into a bytes object'''
+        idx = TagEntry._struct.pack(HDRMAGIC, 0, len(self.tagent), len(self.store))
+        tagents = b''.join(te._pack() for te in self.tagent.values())
+        return idx + tagents + self.store
+
+    def verify_region(self, regiontag=None):
+        te = None
+        # If caller specified the region tag id, get that, otherwise the first
+        # tag in the header is always supposed to be a region tag
+        if regiontag:
+            te = self.tagent.get(regiontag)
+        else:
+            te = next(iter(self.tagent.values())) if self.tagent else None
+
+        # Okay - is this tag entry actually one of the known region tags?
+        if not (te and te.tag in (61, 62, 63)):
+            raise HeaderError("No header region tag found")
+
+        # Does it have the correct type and size?
+        if not (te.type == 7 and te.count == 16): # 7=VType.BIN
+            raise HeaderError("region tag bad")
+
+        # Is its data actually within the store?
+        if not (te.count + te.offset <= len(self.store)):
+            raise HeaderError("region offset bad")
+
+        # Okay cool, decode the trailer.
+        (tag, typ, off, cnt) = struct.unpack("!LLlL",
+                                             self.store[te.offset:te.offset+te.count])
+        # NOTE: the trailer's offset field is negative, so.. negate it
+        trailer = TagEntry(tag, typ, -off, cnt, None, None)
+
+        # fixup for old packages that use TRAILERSIGNATURES in the sighdr but
+        # TRAILERIMAGE in the trailer tag..
+        if (te.tag == 62 and trailer.tag == 61):
+            trailer = trailer._replace(tag=te.tag)
+
+        # The trailer tag entry should have the same type, tagid, and size as
+        # the region tag
+        if not (trailer.tag == te.tag and
+                trailer.type == te.type and
+                trailer.count == te.count):
+            raise HeaderError("region trailer bad")
+
+        # The trailer offset should be the size of the tagent table, and count
+        # is the size of a tagent
+        if not (trailer.offset == te.count * len(self.tagent)):
+            raise HeaderError("region size bad")
+
+        # Wowsers everything is okay. Return the tag we checked (so the caller
+        # knows which one we found)
+        return te.tag
 
     def rawval(self, tag):
         '''Return the raw value for the given tag, as bytes.'''
@@ -237,13 +294,15 @@ class rpmhdr(object):
     def __init__(self, filename):
         self.name = filename
         with open(filename, 'rb') as fobj:
-            self.lead = read_lead(fobj)
+            self.lead = rpmlead._read(fobj)
             self.sig = rpmsection(fobj, pad=True)
             self.hdr = rpmsection(fobj, pad=False)
             self.headersize = fobj.tell()
 
         size = os.stat(filename).st_size
-        assert (self.headersize == 0x60+self.sig.size+self.hdr.size)
+        hsize = 0x60+self.sig.size+self.hdr.size
+        if self.headersize != hsize:
+            raise HeaderError(f"headersize {self.headersize} != {hsize}")
         self.payloadsize = size - self.headersize
 
         # Grab the pkgtup values
@@ -267,6 +326,15 @@ class rpmhdr(object):
         return len(self.hdr.tagval.get(1116, []))
 
     def open_payload(self):
+        '''Open this RPM's backing file, seek to the start of the payload,
+        and return a file object `fobj` that has two additional properties:
+            fobj.format: the PAYLOADFORMAT tag value
+            fobj.compressor: the PAYLOADCOMPRESSOR tag value
+        You should probably use this as a context manager to ensure the file
+        gets closed:
+            with r.open_payload() as fobj:
+                ...
+        '''
         fobj = open(self.name, 'rb')
         fobj.seek(self.headersize)
         fobj.format = self.hdr.getval(1124)
