@@ -1,7 +1,7 @@
 from .hdr import rpmhdr, pkgtup
 from .tags import Tag, SigTag
 from .file import Attrs, VerifyAttrs
-from .deps import DepFlags, depinfo, deptypes
+from .deps import DepFlags, depinfo, deptypes, deptup
 from .repo import iter_repo_rpms
 from .progress import progress
 
@@ -159,7 +159,7 @@ class rpm(rpmhdr):
         dep = depinfo[name]
         deptags = (dep.nametag, dep.flagtag, dep.vertag, dep.idxtag)
         for n, f, v, i in self.zipvals(*deptags):
-            yield (n, DepFlags(f), v, i)
+            yield deptup(n, DepFlags(f), v, i)
 
     def getdeps(self, name):
         return list(self.iterdeps(name))
