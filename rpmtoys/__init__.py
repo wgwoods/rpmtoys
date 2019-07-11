@@ -3,6 +3,7 @@ from .tags import Tag, SigTag
 from .file import Attrs, VerifyAttrs
 from .deps import DepFlags, depinfo, deptypes, deptup
 from .repo import iter_repo_rpms
+from .digest import gethasher, digest
 from .progress import progress
 
 __all__ = ['rpm', 'Tag', 'Attrs', 'VerifyAttrs', 'DepFlags', 'progress',
@@ -10,12 +11,6 @@ __all__ = ['rpm', 'Tag', 'Attrs', 'VerifyAttrs', 'DepFlags', 'progress',
 
 from collections import namedtuple, OrderedDict, Counter
 from itertools import zip_longest
-
-# optional external dependency
-try:
-    from .payload import libarchive_payload_reader
-except ImportError:
-    libarchive_payload_reader = None
 
 # (mode, ino, dev, username, groupname, size, mtime)
 # ..it's *close* to python's os.stat() output, at least.
@@ -55,7 +50,7 @@ rpmfile = namedtuple("rpmfile",
 
 class rpm(rpmhdr):
     '''
-    A slightly higher-level interface for inspecting RPM headers.
+    A slightly higher-level interface for inspecting RPM contents.
     '''
     def __repr__(self):
         return '<{}.{}({!r})>'.format(self.__module__, self.__class__.__name__, self.name)
@@ -70,11 +65,15 @@ class rpm(rpmhdr):
                     for t in self.hdr.tagval},
         }
 
-    payload_reader = libarchive_payload_reader
     def payload_iter(self):
-        with self.payload_reader() as payload:
-            for entry in payload:
-                yield entry
+        from libarchive import stream_reader
+        with self.open_payload() as payload_fobj:
+            with stream_reader(payload_fobj,
+                               format_name=payload_fobj.format or 'all',
+                               filter_name=payload_fobj.compressor or 'all',
+                               ) as payload:
+                for entry in payload:
+                    yield entry
 
     def itertags(self, which='all'):
         okvals = ('sig', 'hdr', 'all')
@@ -104,6 +103,84 @@ class rpm(rpmhdr):
             src = src[:-4]
         return pkgtup.fromenvra(src)._replace(epoch=self.pkgtup.epoch,
                                               arch=self.pkgtup.arch)
+
+    def digest(self, md5=True, sha1=True, sha256=True):
+        '''
+        Return digests of this RPM, as rpm would calculate them.
+        Note that the MD5 covers the header and payload, while
+        SHA1 and SHA256 only cover the header - but the header
+        contains digests for each file, so we can still verify the
+        integrity of the _contents_ of the payload even if the
+        payload itself changes (e.g. if we re-ordered files)
+        '''
+        return digest(self.name, md5=md5, sha1=sha1, sha256=sha256)
+
+    def _getsigdigests(self):
+        from .tags import DIGEST_SIGTAGS
+        return {tag.name:self.sig.getval(tag)
+                for tag in DIGEST_SIGTAGS
+                if tag in self.sig.tagent}
+
+    def _getsignatures(self):
+        from .tags import SIGNATURE_SIGTAGS
+        return {tag.name:self.sig.getval(tag)
+                for tag in SIGNATURE_SIGTAGS
+                if tag in self.sig.tagent}
+
+    def checkdigests(self, hdr=True, payload=True, filedigests=True):
+        '''
+        Check RPM package/file/payload digests against expected values.
+        An RPM's signature header can
+        contain the following digests (see `digest()`):
+            sha1:   SHA1 of the hdr section
+            sha256: SHA256 of the hdr section
+            md5:    MD5 of the hdr section + payload
+
+        The RPM hdr can also contain the FILEDIGESTS tag, which will have
+        digests of each file in the payload. The digest algorithm is specified
+        by the FILEDIGESTALGO tag.
+        '''
+        result = dict()
+        if hdr or payload:
+            # Get sighdr digest values (if present)
+            sig = self._getsigdigests()
+            dig = self.digest(md5=payload and 'MD5' in sig,
+                              sha1=hdr and 'SHA1' in sig,
+                              sha256=hdr and 'SHA256' in sig)
+            res = {n:sig[n]==dig[n] for n in dig}
+            if payload:
+                result['payload'] = {'MD5':res.pop('MD5')}
+            if hdr:
+                result['hdr'] = res
+        if filedigests:
+            result['filedigests'] = self.checkfiledigests()
+        # TODO: Tag.PAYLOADDIGEST, if present
+        return result
+
+    # TODO: this should get imported from rpmtoys.gpg or whatev
+    DEFAULT_KEYDIR = '/etc/pki/rpm-gpg'
+    def checksigs(self, keydir=None, hdr=True, payload=True):
+        if not keydir:
+            keydir = self.DEFAULT_KEYDIR
+        sig = self._getsignatures() # {'PGP':b'...', RSA:b'...'}
+        # TODO: actually check signatures!!
+        #   SigTag.RSA for header
+        #   SigTag.PGP for header+payload
+        raise NotImplementedError
+
+    def iterdigestfiles(self, algo=None):
+        if algo is None:
+            algo = self.hdr.getval(Tag.FILEDIGESTALGO)
+        for e in self.payload_iter():
+            if e.isreg:
+                h = gethasher(algo)
+                for block in e.get_blocks():
+                    h.update(block)
+                yield (e.name[1:], h.hexdigest())
+
+    def checkfiledigests(self):
+        dig = dict(zip(self.iterfiles(), self.getval(Tag.FILEDIGESTS)))
+        return {n:dig.get(n)==d for n,d in self.iterdigestfiles()}
 
     def nfiles(self):
         return self.getcount(Tag.BASENAMES)
@@ -168,6 +245,10 @@ class rpm(rpmhdr):
         return {name:self.getdeps(name) for name in self.depnames()}
 
     def payloadinfo(self):
+        '''
+        Return an iterator that yields rpmfile (q.v.) objects corresponding to
+        each file listed in the RPM header.
+        '''
         if not self.nfiles():
             return []
         return (rpmfile(*f) for f in zip_longest(self.iterfiles(),

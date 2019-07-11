@@ -199,5 +199,8 @@ if __name__ == '__main__':
         print("TODO USAGE")
     elif sys.argv[1] == "interactive":
         pd = {f:load_payloaddata(f) for f in sys.argv[2:]}
+        print("Data loaded:")
+        for f in pd:
+            print(f"  uids, gids, rpms = pd[{f!r}]")
     elif sys.argv[1] == "generate":
         uids, gids, files = dump_payloaddata(sys.argv[3:], sys.argv[2])
