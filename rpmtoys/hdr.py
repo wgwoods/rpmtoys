@@ -373,7 +373,7 @@ class rpmhdr(object):
             val = [val]
 
         # ..except for ENCODING. bluhhh RPM why are you like this.
-        if tag == 5092 and type(val) == list and len(val) == 1:
+        if tag == 5062 and type(val) == list and len(val) == 1:
             val = val[0]
 
         # oh also this, which the rpm module rejiggers internally
