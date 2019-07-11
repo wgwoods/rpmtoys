@@ -71,10 +71,11 @@ def iter_unpack_c_string(store, offset, count=1):
 
 
 # Run through the section's "tags", parse the corresponding values, and
-# return a gnarly tuple (tag,typ,off,size,realsize,val) for each one.
+# return a gnarly tuple (tag,typ,off,cnt,size,realsize,val) for each one.
 #  tag: `int` tag number
 #  typ: `int` tag type (0-9, see "Index Type Values" in the LSB RPM docs)
 #  off: `int` offset into the store where the value resides
+#  cnt: `int` count of items for ARRAY-typed items
 #  size: `int` length of the value data, in bytes
 #  realsize: `int` count of bytes of the value that do _not_ overlap other
 #            values. (The first value will have size == realsize).
@@ -130,8 +131,18 @@ def iter_parse_tags(tags, store): # noqa: C901
 
         yield (tag, typ, off, cnt, size, realsize, val)
 
-# TODO: use this instead of 5 different dicts?
-class TagEntry(namedtuple("TagEntry", "tag type offset count size realsize value")):
+class TagEntry(namedtuple("TagEntry", "tag type offset count size realsize")):
+    _struct = struct.Struct("! 4L")
+    def _pack(self):
+        return self._struct.pack(self.tag, self.type, self.offset, self.count)
+    @classmethod
+    def _unpack(cls, data):
+        tag, typ, off, cnt = cls._struct.unpack(data)
+        return cls(tag, typ, off, cnt, None, None)
+
+HDRMAGIC = 0x8eade801
+
+class HeaderError(ValueError):
     pass
 
 class rpmsection(object):
@@ -145,27 +156,19 @@ class rpmsection(object):
         self._bin_tags = (SIG_BIN_TAGS if self.is_sig else BIN_TAGS)
         self.size = 16 + 16*len(tagents) + len(store)
         self.store = store
-        self.tagents = OrderedDict()
-        self.tagtype = OrderedDict()
-        self.tagrange = OrderedDict()
-        self.tagsize = OrderedDict()
+        self.tagent = OrderedDict()
         self.tagval = OrderedDict()
-        self.tagcnt = OrderedDict()
         self.encoding = 'utf-8'
         for tag, typ, off, cnt, size, rsize, val in iter_parse_tags(tagents, store):
-            self.tagents[tag] = TagEntry(tag, typ, off, cnt, size, rsize, val)
-            self.tagtype[tag] = typ
-            self.tagrange[tag] = (off, size)
-            self.tagcnt[tag] = cnt
-            self.tagsize[tag] = rsize
+            self.tagent[tag] = TagEntry(tag, typ, off, cnt, size, rsize)
             self.tagval[tag] = val
             if tag == 5062:  # ENCODING
                 self.encoding = val.decode('utf-8')
 
     def rawval(self, tag):
         '''Return the raw value for the given tag, as bytes.'''
-        off, size = self.tagrange[tag]
-        return self.store[off:off+size]
+        te = self.tagent[tag]
+        return self.store[te.offset:te.offset+te.size]
 
     def getval(self, tag, default=None):
         '''
@@ -182,7 +185,7 @@ class rpmsection(object):
         if tag not in self.tagval:
             return default
         val = self.tagval[tag]
-        typ = self.tagtype[tag]
+        typ = self.tagent[tag].type
         enc = self.encoding
         if typ < 6:  # int arrays
             return val
@@ -356,13 +359,13 @@ class rpmhdr(object):
                 continue
 
             # Do we also have this tag?
-            assert t in self.hdr.tagtype, terr(t, "not in hdr")
+            assert t in self.hdr.tagent, terr(t, "not in hdr")
+            te = self.hdr.tagent[t]
 
             # Do the types and values match?
-            typ = self.hdr.tagtype.get(t)
             myval = self._get_rpm_val(t)
             rpmval = hdr[t]
-            if typ == 9:
+            if te.type == 9:
                 assert type(myval) == list, terr(t, "I18NTABLE isn't a list")
                 assert rpmval in myval, terr(t, "value {} not in table: {}", rpmval, myval)
             else:
@@ -372,9 +375,8 @@ class rpmhdr(object):
                 assert (myval == rpmval), terr(t, "{} != {}", myval, rpmval)
 
             # Does the measured size match the expected size?
-            off, size = self.hdr.tagrange[t]
-            expsize = self._expsize(myval, typ)
-            assert size == expsize, terr(t, "size mismatch: {} != {}", size, expsize)
+            expsize = self._expsize(myval, te.type)
+            assert te.size == expsize, terr(t, "size mismatch: {} != {}", te.size, expsize)
 
             # OK! Add it to the list!
             checked.add(t)

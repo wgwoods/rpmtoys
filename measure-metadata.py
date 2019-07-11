@@ -38,8 +38,8 @@ def dump_sizedata(repo_paths, outfile="sizedata.json.gz"):
         r = rpmhdr(rpmfn)
         sizedata[r.envra] = [
                 [r.sig.size, r.hdr.size, r.payloadsize],
-                [(tag, off, size, r.hdr.tagsize[tag])
-                    for tag, (off, size) in r.hdr.tagrange.items()]
+                [(te.tag, te.offset, te.size, te.realsize)
+                    for te in r.hdr.tagent.values()]
         ]
         for t in r.hdr.tagval:
             if t >= 1000 and t not in BIN_TAGS:

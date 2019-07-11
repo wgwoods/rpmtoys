@@ -76,11 +76,22 @@ class rpm(rpmhdr):
             for entry in payload:
                 yield entry
 
+    def itertags(self, which='all'):
+        okvals = ('sig', 'hdr', 'all')
+        if which not in okvals:
+            raise ValueError(f"'which' should be one of {okvals}")
+        if which in ('sig', 'all'):
+            for t in self.sig.tagent:
+                yield (SigTag(t), self.sig.getval(t))
+        if which in ('hdr', 'all'):
+            for t in self.hdr.tagent:
+                yield (Tag(t), self.hdr.getval(t))
+
     def getval(self, tag, default=None):
         return self.hdr.getval(tag, default)
 
     def getcount(self, tag):
-        return self.hdr.tagcnt.get(tag, 0)
+        return self.hdr.tagent.get(tag).count if tag in self.hdr.tagent else 0
 
     def zipvals(self, *tags):
         return tuple(zip_longest(*(self.getval(t,[]) for t in tags)))
