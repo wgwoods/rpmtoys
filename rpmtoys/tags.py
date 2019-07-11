@@ -100,27 +100,30 @@ SIG_BIN_TAGS = {t for t in SigTag if t.vtype == VType.BIN}
 SCALAR_TAGS = {t for t in Tag if t.rtype == RType.SCALAR}
 SIG_SCALAR_TAGS = {t for t in SigTag if t.rtype == RType.SCALAR}
 # Tags that have array values with one item per file
-PER_FILE_TAGS = {Tag.FILESIZES,
-                 Tag.FILEMODES,
-                 Tag.FILERDEVS,
-                 Tag.FILEMTIMES,
-                 Tag.FILEDIGESTS,
-                 Tag.FILELINKTOS,
-                 Tag.FILEFLAGS,
-                 Tag.FILEUSERNAME,
-                 Tag.FILEGROUPNAME,
-                 Tag.FILEVERIFYFLAGS,
-                 Tag.FILEDEVICES,
-                 Tag.FILEINODES,
-                 Tag.FILELANGS,
-                 Tag.DIRINDEXES,
-                 Tag.BASENAMES,
-                 Tag.FILECOLORS,
-                 Tag.FILECLASS,
-                 Tag.FILEDEPENDSX,
-                 Tag.FILEDEPENDSN,
-                 Tag.FILECAPS}
-# TODO: FILESIGNATURES?
+PER_FILE_TAGS = {
+    Tag.FILESIZES,
+    Tag.FILEMODES,
+    Tag.FILERDEVS,
+    Tag.FILEMTIMES,
+    Tag.FILEDIGESTS,
+    Tag.FILELINKTOS,
+    Tag.FILEFLAGS,
+    Tag.FILEUSERNAME,
+    Tag.FILEGROUPNAME,
+    Tag.FILEVERIFYFLAGS,
+    Tag.FILEDEVICES,
+    Tag.FILEINODES,
+    Tag.FILELANGS,
+    Tag.DIRINDEXES,
+    Tag.BASENAMES,
+    Tag.FILECOLORS,
+    Tag.FILECLASS,
+    Tag.FILEDEPENDSX,
+    Tag.FILEDEPENDSN,
+    Tag.FILECAPS,
+    Tag.FILESIGNATURES, # XXX unverified
+    # Tag.PREFIXES?
+}
 
 # Group dependencies by type. Note that the names are a _prefix_ for a bunch of
 # tags that get zipped together inside RPM to create each dependency "item".
@@ -144,6 +147,10 @@ DEPENDENCY_NAMES = {n:Tag.byprefix(n)
 SCRIPTLET_NAMES = {n:Tag.byprefix(n)
                    for sn in SCRIPTLET_GROUPS.values() for n in sn}
 
+# Here's a couple of groupings for SigTags.
+SIGNATURE_SIGTAGS = {SigTag.PGP, SigTag.GPG, SigTag.DSA, SigTag.RSA}
+DIGEST_SIGTAGS = {SigTag.MD5, SigTag.SHA1, SigTag.SHA256}
+
 # Lovingly handcrafted tag groupings.
 # This covers every tag known to rpm-4.14.1. Whee!
 tag_group = {name:{Tag(t) for t in grp} for (name, grp) in {
@@ -166,6 +173,7 @@ tag_group = {name:{Tag(t) for t in grp} for (name, grp) in {
     "SRPM":        {1018, 1019, 1051, 1052, 1059, 1060, 1061, 1062, 1089},
     "RPMDB":       {1008, 1127, 1128, 1129, 1195, 5040},
     "DEPRECATED":  {1027, 1119, 1120, 1121, 5007},
+    # FIXME: Tag and SigTag are separate namespaces...
     "SIGNATURES":  {62, 257, 259, 261, 262, 266, 267, 268, 269, 270, 271, 273,
                     5090, 5091},
     "CHANGELOG":   Tag.byprefix("Changelog"),
