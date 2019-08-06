@@ -34,10 +34,29 @@ HashName = [None,
             'sha224',
 ]
 
+HashSize = [0,
+            16,
+            20,
+            20,
+            0,
+            16,
+            24,
+            20,
+            32,
+            48,
+            64,
+            28,
+]
+
 def gethasher(algo):
     if isinstance(algo, int):
         algo = HashName[algo]
     return hashlib.new(algo)
+
+def hashsize(algo):
+    if isinstance(algo, int):
+        return HashSize[algo]
+    return gethasher(algo).digest_size
 
 class RPMVerifier(object):
     def __init__(self):
