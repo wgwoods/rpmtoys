@@ -159,7 +159,6 @@ def dump_payloaddata(repo_paths, outfile="payloaddata.json.gz"):
         json.dump(o, outf)
     return uids, gids, rpms
 
-
 class RPMCountLoader(object):
     '''An object for doing progress reporting while loading payloaddata'''
     def __init__(self, total, prefix=''):
@@ -202,5 +201,10 @@ if __name__ == '__main__':
         print("Data loaded:")
         for f in pd:
             print(f"  uids, gids, rpms = pd[{f!r}]")
+        print("rpms is a dict of {nevra:[[file1,hardlink1,...],\n"
+              "               [file2],\n"
+              "               [file3],...],...}\n")
     elif sys.argv[1] == "generate":
-        uids, gids, files = dump_payloaddata(sys.argv[3:], sys.argv[2])
+        outfn = sys.argv[2]
+        repodirs = sys.argv[3:]
+        uids, gids, files = dump_payloaddata(repodirs, outfn)
