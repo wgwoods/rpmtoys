@@ -276,6 +276,12 @@ class pkgtup(namedtuple('pkgtup', 'name arch epoch ver rel')):
         else:
             return "{0.epoch}:{0.name}-{0.ver}-{0.rel}.{0.arch}".format(self)
 
+    def nevra(self):
+        if self.epoch is None:
+            return self.envra()
+        else:
+            return "{0.name}-{0.envra}:{0.ver}-{0.rel}.{0.arch}".format(self)
+
     __str__ = envra
 
     @classmethod
@@ -288,6 +294,17 @@ class pkgtup(namedtuple('pkgtup', 'name arch epoch ver rel')):
         nv, _, rel = nvr.rpartition('-')
         name, _, ver = nv.rpartition('-')
         return cls(name, arch, epoch, ver, rel)
+
+    @classmethod
+    def fromnevra(cls, nevra):
+        vra_start = nevra.find(':')+1
+        if vra_start < 0:
+            return cls.fromenvra(nevra)
+        n_end = nevra.rfind('-',0,vra_start)+1
+        e = nevra[n_end:vra_start]
+        n = nevra[:n_end]
+        vra = nevra[vra_start:]
+        return cls.fromenvra(e+n+vra)
 
 # Our equivalent to rpm.hdr - hold all the RPM's header data.
 class rpmhdr(object):
