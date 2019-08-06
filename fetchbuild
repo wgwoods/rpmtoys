@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # fetchbuild - fetch entire builds from koji
 
-DISTS = [".fc26", ".fc27", ".fc28"]
+DISTS = [".fc27", ".fc28", ".fc29", ".fc30"]
 ARCHES = ["x86_64", "noarch"]
 
 import os
