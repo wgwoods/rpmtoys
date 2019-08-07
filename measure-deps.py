@@ -89,6 +89,79 @@ abi = {
     'python', 'pypy2', 'gawk', 'lua', 'tcl', 'blender', 'nodejs',
 }
 
+# TODO: deal with bundled()
+
+# Gathered from F30 x86_64
+autoprov_namespaces = {
+    'appdata', 'application', 'cmake', 'debuginfo', 'drupal7',
+    'font', 'ghc-devel',
+    'golang', 'golang-ipath',
+    'gstreamer0.10', 'gstreamer1', 'kmod', 'libtool',
+    'metainfo', 'mimehandler',
+    'mingw32', 'mingw64', 'mono', 'mvn', 'npm', 'ocaml', 'osgi', 'perl',
+    'pkgconfig',
+    'plasma4', 'postscriptdriver',
+    'python2.6dist', 'python2.7dist', 'python2dist',
+    'python3.7dist', 'python3dist',
+    'rubygem',
+}
+
+autoprov_abi = {
+    'debuginfo(build-id)',
+}
+
+# TODO: some of these probably need further investigation
+# (rtld, python, erlang..)
+autoreq_namespaces = {
+    'ghc-devel', 'golang', 'golang-ipath',
+    'mingw32', 'mingw64', 'mono', 'mvn', 'npm',
+    'ocaml', 'osgi', 'perl', 'pkgconfig',
+    'python2.7dist', 'python3.7dist',
+    'rubygem',
+}
+
+autoreq_abi = {
+    'ruby(rubygems)', 'drupal7(core)', 'python(abi)',
+    'nodejs(abi10)', 'nodejs(abi8)', 'nodejs(engine)', 'nodejs(v8-abi6)',
+    'plasma4(scriptengine-declarativeappletscript)',
+    'erlang(erl_drv_version)', 'erlang(erl_nif_version)',
+    'rtld(GNU_HASH)',
+}
+
+
+# HEIRARCHY OF REQ/PROV
+#
+# * Provides
+#   * Auto
+#     * ELF: contains '.so'; SONAME(SYMBOL?)(BITS)
+#     * Namespaced: NS(NS-STUFF) (NS is in autoprov_namespaces)
+#       * bundled(PROV): can wrap other autoprovs
+# * Requires:
+#   * Auto
+#     * ELF: as above, with bonuses
+#       * rtld(GNU_HASH)
+#     * Arch/ABI stuff?
+#       * ends with (x86-64) or (x86-32)
+#       * ends with (abi) or (api) or (ABI) or (API)
+#       * nodejs(abi10), nodejs(abi8), nodejs(engine), nodejs(v8-abi6)
+#       * python(abi)
+#       * ruby(rubygems)
+#       * drupal7(core)
+#       * plasma4(scriptengine-declarativeappletscript)
+#       * erlang(erl_drv_version), erlang(erl_nif_version)
+#     * Namespaced: as above, but..
+#       * No bundled() [that wouldn't even make sense!]
+#       * erlang-XXX() - what?
+#
+# Misc. notes:
+# * There are no auto-provides for file paths
+# * There *are* auto-generated Conflicts, Suggests, etc.
+#   * rubygem-em-http-request-1.1.5-6.fc30.noarch: Conflicts
+#   * nodejs-st-1.2.0-1.fc28.noarch: Suggests
+# * Provides can be 'auto', 'manual', or 'config'
+
+
+
 if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
