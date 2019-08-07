@@ -1,6 +1,25 @@
 #!/usr/bin/python3
+# mkdino.py - hacky script to generate .dino packfiles from sets of RPMs
+#
+# Copyright (c) 2019, Red Hat, Inc.
+#
+# TODO: proper GPLv3 boilerplate here; see LICENSE
+#
+# Author: Will Woods <wwoods@redhat.com>
 
-import os
+# This is a gnarly demo of one way we could build some .dino packfiles.
+#
+# TODO:
+# * Build indexes over output directory contents
+# * Command to list contents of .dino/.didx
+# * Command to extract RPM from .dino
+# * Multithreading: uncompression, hashing, compression
+# * Binary deltas
+#
+# Known bugs:
+# * Crashes if you try to build a .dino >= 4GB (no 64-bit support)
+# * Compression is weirdly bad for certain packages (like git?)
+
 import struct
 
 from io import BytesIO
@@ -12,10 +31,6 @@ from rpmtoys import rpm, pkgtup, Tag, SigTag
 from rpmtoys.vercmp import rpm_evr_key
 from rpmtoys.digest import gethasher, hashsize, HashAlgo
 from rpmtoys.progress import progress
-
-#from rpmtoys.dino import DINO, DINORPMArchive, DigestID
-# FIXME these are used by load() which should be in .dino
-#from rpmtoys.dino import Dhdrp, Shdrp, StringTable, MAGIC_V0
 
 from dino import DINO, Arch, CompressionID, DigestID, SectionFlags, ObjectType
 from dino.section import RPMSection, IndexSection, FileDataSection
@@ -127,6 +142,8 @@ def unc_payloadsize(r):
     return (sum(pad4(112+len(f)) for f in r.iterfiles()) +
             sum(pad4(s) for s in r.getval(Tag.FILESIZES,[])) + 124)
 
+# FIXME this is a long, awful mess; most of the interesting stuff here should
+# move into the dino library itself, DINORPMArchive, or more generic tools
 def merge_rpms(rpmiter, outfile):
     # Start with a new header object
     d = DINORPMArchive()
@@ -246,7 +263,6 @@ def merge_rpms(rpmiter, outfile):
                f' {f"compr={filesize/unc_filesize:<6.2%}" if filesize else ""}'
                f' diff={sizediff:+} ({sizediff/rpmsize:+.1%})'
                f' {"(!)" if sizediff/rpmsize > 0.02 else ""}')
-               #f' {"(!)" if filesize > r.payloadsize else ""}'
 
         # Generate pkgkey (TODO: maybe copy_into should do this..)
         # TODO: y'know, it might be more useful to use the sha256 of the
@@ -268,42 +284,56 @@ def merge_rpms(rpmiter, outfile):
           f'{" (!)" if wrote > rpmtotal else ""}')
     return rpmtotal, wrote
 
+# TODO: so yeah how do we actually open/read the files we wrote tho.
+# This stuff should all end up in the dino module.
 class DinoError(Exception):
     pass
 
-# FIXME: how do we actually open/read the files we wrote tho.
 def dino_open(filename):
-    import mmap
+    from dino import Dhdrp, Shdrp, StringTable, MAGIC_V0
+    #import mmap
     inf = open(filename, mode='r+b')
+    d = DINO()
+
     # read DINO header
-    # TODO: DINO.from_file()
-    Dhdr = Dhdrp.read1_from(inf)
-    if Dhdr.magic != MAGIC_V0:
+    # TODO: d.from_file()
+    dhdr = Dhdrp.read1_from(inf)
+    if dhdr.magic != MAGIC_V0:
         raise DinoError(f'{filename} has bad magic')
+
     # read section table
-    shdrs = list(Shdrp.iter_read_from(inf, Dhdr.sectab_size))
+    shdrs = list(Shdrp.iter_read_from(inf, dhdr.sectab_size))
+    # TODO: d.sectab.from_bytes(inf.read(dhdr.sectab_size))
+
     # read name table
-    namtab = StringTable()
-    namtab.from_bytes(inf.read(Dhdr.namtab_size))
+    d.namtab.from_bytes(inf.read(dhdr.namtab_size))
+
+    # Get the current file offset
     offset = inf.tell()
-    return (Dhdr, shdrs, namtab, offset)
+
+    return (d, dhdr, shdrs, offset)
 
 if __name__ == '__main__':
-    import sys
     # TODO: ugh real cmdline parsing come on dude
+    import sys
+
     if len(sys.argv) < 2:
-        print("FIXME USAGE")
+        print("usage: mkdino.py DINODIR RPMDIR [RPMDIR..]")
+        print("or:    ipython3 -i mkdino.py DINOFILE")
+        raise SystemExit(2)
+
     elif len(sys.argv) == 2:
         from rpmtoys import dino # convenience for ipython
         dinofile = sys.argv[1]
-        dhdr, shdrs, namtab, offset = dino_open(dinofile)
+        d, dhdr, shdrs, offset = dino_open(dinofile)
         print(f'dinofile={dinofile!r}')
         print(f'dhdr={dhdr}')
         print(f'shdrs=[')
         for sh in shdrs:
-            print('  '+str(sh._replace(name=namtab.get(sh.name)))+',')
+            print('  '+str(sh._replace(name=d.namtab.get(sh.name)))+',')
         print(']')
         print(f'offset={offset!r}')
+
     elif len(sys.argv) > 2:
         dinodir = Path(sys.argv[1])
         if not dinodir.exists():
@@ -323,5 +353,3 @@ if __name__ == '__main__':
             # TODO: write index(es) into dinodir
         print(f"read {rpmcount} packages ({rpmtotal} bytes), wrote {dinocount}"
               f" packfiles ({dinototal} bytes, {(dinototal-rpmtotal)/rpmtotal:+.1%})")
-
-        # TODO: summary info
