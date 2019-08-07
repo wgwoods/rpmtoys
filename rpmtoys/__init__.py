@@ -104,6 +104,8 @@ class rpm(rpmhdr):
         return pkgtup.fromenvra(src)._replace(epoch=self.pkgtup.epoch,
                                               arch=self.pkgtup.arch)
 
+    srctup = buildtup
+
     def digest(self, md5=True, sha1=True, sha256=True):
         '''
         Return digests of this RPM, as rpm would calculate them.
@@ -195,6 +197,16 @@ class rpm(rpmhdr):
         for diridx, basename in zip(dirindexes, basenames):
             yield (dirnames[diridx]+basename).decode('utf-8')
 
+    def iterdigests(self):
+        '''Yield each of the file digests if FILEDIGESTS is present'''
+        yield from self.getval(Tag.FILEDIGESTS, [])
+
+    def iterflags(self):
+        yield from map(Attrs, self.getval(Tag.FILEFLAGS, []))
+
+    def iterverifyflags(self):
+        yield from map(VerifyAttrs, self.getval(Tag.FILEVERIFYFLAGS, []))
+
     def iterfclass(self):
         '''Yield the file "class" for each file in this RPM.'''
         classdict = self.getval(Tag.CLASSDICT)
@@ -229,6 +241,39 @@ class rpm(rpmhdr):
         for ex in self.zipvals(*extras._tags):
             yield {k:v for k,v in zip(extras._fields, ex) if v}
 
+    rpmfileiter = dict(
+        name=iterfiles,
+        digest=iterdigests,
+        stat=iterfstat,
+        nlink=iternlink,
+        fclass=iterfclass,
+        flags=iterflags,
+        verifyflags=iterverifyflags,
+        depends=iterfiledeps,
+        extra=iterfextras,
+    )
+
+    def iterfileinfo(self, what=("all",)):
+        '''
+        Return an iterator that yields tuples of each of the rpmfile fields
+        listed in `what`.
+        If what == ("all",) then you get all fields - but you probably want
+        iterrpmfiles(), which yields full rpmfile objects.
+        '''
+        # Possibly unnecessary shortcut..
+        if self.nfiles() == 0:
+            yield from []
+        if "all" in what:
+            what = self.rpmfileiter.keys()
+        yield from zip_longest(*(self.rpmfileiter[k](self) for k in what))
+
+    def iterrpmfiles(self):
+        '''
+        Return an iterator that yields rpmfile (q.v.) objects corresponding to
+        each file listed in the RPM header.
+        '''
+        yield from (rpmfile(*f) for f in self.iterfileinfo())
+
     def depnames(self):
         return [d.name for d in deptypes if self.getcount(d.nametag)]
 
@@ -243,20 +288,3 @@ class rpm(rpmhdr):
 
     def alldeps(self):
         return {name:self.getdeps(name) for name in self.depnames()}
-
-    def payloadinfo(self):
-        '''
-        Return an iterator that yields rpmfile (q.v.) objects corresponding to
-        each file listed in the RPM header.
-        '''
-        if not self.nfiles():
-            return []
-        return (rpmfile(*f) for f in zip_longest(self.iterfiles(),
-                                                 self.getval(Tag.FILEDIGESTS),
-                                                 self.iterfstat(),
-                                                 self.iternlink(),
-                                                 self.iterfclass(),
-                                                 map(Attrs, self.getval(Tag.FILEFLAGS)),
-                                                 map(VerifyAttrs, self.getval(Tag.FILEVERIFYFLAGS)),
-                                                 self.iterfiledeps(),
-                                                 self.iterfextras()))
