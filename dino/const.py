@@ -3,7 +3,7 @@
 from enum import IntEnum, IntFlag, auto
 
 # Magic bytes
-MAGIC_V0 = 0xedabeef0
+MAGIC_V0 = b'\xed\xab\xee\xf0'
 
 # Special name_idx value that means "no name"
 NAME_IDX_NONE = 0xffff
@@ -53,9 +53,15 @@ class Arch(IntEnum):
     RISCV   = 243
 
 class HeaderEncoding(IntFlag):
-    DEFAULT     = 0b00000000 # Big-endian; 32-bit offsets
-    LE          = 0b00000001 # TODO: little-endian
-    OFF64       = 0b00000010 # TODO: 64-bit section sizes
+    LE          = 0b00000000 # Little-endian is the default; no bit set
+    BE          = 0b00000001 # Big-endian
+    OFF64       = 0b00000010 # TODO: 64-bit sizes/offsets
+
+    def byteorder(self):
+        return self & 0b1
+
+    def endian(self):
+        return '>' if self.byteorder() == self.BE else '<'
 
 class ObjectType(IntEnum):
     Unknown     = 0

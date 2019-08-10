@@ -32,8 +32,8 @@ KNOWN BUGS/LIMITATIONS:
 
 from .const import *
 from .section import *
-from .struct import Dhdrp, Shdrp, StringTable, SectionTable
-from .compression import get_compressor
+from .struct import Dhdrp, Shdrp, StringTable
+from .compression import get_compressor, get_decompressor
 
 # This only exports the public-facing stuff enums and classes.
 __all__ = [
@@ -47,6 +47,9 @@ __all__ = [
     'DINO',
 ]
 
+class DINOError(Exception):
+    pass
+
 class DINO(object):
     MAGIC = MAGIC_V0
     VERSION = 0
@@ -55,27 +58,122 @@ class DINO(object):
                  encoding=HeaderEncoding(0),
                  objtype=ObjectType(0),
                  compression_id=CompressionID(0)):
-        self.arch = arch
-        self.encoding = encoding
-        self.objtype = objtype
-        self.compression_id = compression_id
+        self._encoding = None
+        self.Dhdrp = Dhdrp
+        self.Shdrp = Shdrp
+        self.arch = Arch(arch)
+        self.encoding = HeaderEncoding(encoding)
+        self.objtype = ObjectType(objtype)
+        self.compression_id = CompressionID(compression_id)
         self.compression_opts = 0    # TODO: proper compression_opts
-        self.sectab = SectionTable() # TODO: just use a list?
+        self.sectab = list()
         self.namtab = StringTable()  # TODO: special NameTable object?
 
+    @classmethod
+    def from_path(cls, path):
+        return cls.from_file(open(path, 'rb'))
+
+    @classmethod
+    def from_file(cls, fobj):
+        d, dhdr, sectab, namtab = cls.read_hdrs(fobj)
+        d.namtab = namtab
+        # Make section objects and populate sectab
+        for shdr in sectab:
+            ThisSection = sectionclass(shdr.stype)
+            sec = ThisSection.from_hdr(shdr)
+            d.add_section(sec)
+        # Now that the sections are all in sectab they can load properly
+        pos = fobj.tell()
+        for shdr, (name, sec) in zip(sectab, d.sections()):
+            sec.from_file(fobj, size=shdr.size, count=shdr.count)
+            pos = fobj.seek(pos+shdr.size)
+        # We're good to go!
+        return d
+
+    @classmethod
+    def read_dhdr(cls, fobj):
+        # Read bytes, check endianness, re-parse if needed
+        dhdr_bytes = fobj.read(Dhdrp.structsize)
+        dhdr = Dhdrp.LE.parse_bytes(dhdr_bytes)
+        if dhdr.encoding & HeaderEncoding.BE:
+            dhdr = Dhdrp.BE.parse_bytes(dhdr_bytes)
+        # Check magic and version
+        if dhdr.magic != cls.MAGIC:
+            raise DINOError(f"Bad magic {dhdr.magic}")
+        if dhdr.version > cls.VERSION:
+            raise DINOError(f"Unknown version {dhdr.version}")
+        # We're good, return a new object with dhdr fields set
+        d = cls(arch=dhdr.arch,
+                encoding=dhdr.encoding,
+                objtype=dhdr.objtype,
+                compression_id=dhdr.compression_id)
+        return d, dhdr
+
+    @classmethod
+    def read_hdrs(cls, fobj):
+        d, dhdr = cls.read_dhdr(fobj)
+        sectab = list(d.Shdrp.iter_read_from(fobj, dhdr.sectab_size))
+        namtab = StringTable(fobj.read(dhdr.namtab_size))
+        return d, dhdr, sectab, namtab
+
+    @property
+    def encoding(self):
+        return self._encoding
+
+    @encoding.setter
+    def encoding(self, enc):
+        enc = HeaderEncoding(enc)
+        if enc & HeaderEncoding.BE:
+            self.Dhdrp, self.Shdrp = Dhdrp.BE, Shdrp.BE
+        else:
+            self.Dhdrp, self.Shdrp = Dhdrp.LE, Shdrp.LE
+        self._encoding = enc
+
     def sections(self):
+        '''Generate (name, section) for each section in the section table.'''
         for sec in self.sectab:
-            name = ''
-            if sec.name_idx != NAME_IDX_NONE:
-                name = self.namtab.get(sec.name_idx)
+            name = self.namtab.get(sec.name_idx)
             yield (name, sec)
 
+    def findsections(self, name=None, suffix=None, type=None):
+        '''
+        Generate each section in this object's section table.
+        Setting `name`, `suffix`, or `type` will generate only sections that
+        match the given constraints.
+        '''
+        # If we got a 'type', turn that into a typeid
+        typeid = None
+        if type:
+            if issubclass(type, BaseSection) or isinstance(type, BaseSection):
+                typeid = type.typeid
+            else:
+                typeid = SectionType(type)
+        for secname, sec in self.sections():
+            if ((not typeid or sec.typeid == typeid) and
+                (not name or name == secname) and
+                (not suffix or secname.endswith(suffix))):
+                yield (name, sec)
+
+    def findsection(self, name=None, suffix=None, type=None):
+        '''Return the first section matching the constraints.'''
+        for secname, sec in self.findsections(name=name, suffix=suffix, type=type):
+            return sec
+
     def add_section(self, section, name=None):
+        section._dino = self
+        idx = len(self.sectab)
+        self.sectab.append(section)
         if name:
-            section.name_idx = self.namtab.add(name)
-        else:
-            section.name_idx = NAME_IDX_NONE
-        return self.sectab.add(section)
+            self.name_section(section, name)
+        return idx
+
+    def name_section(self, section, name):
+        name_idx = self.namtab.add(name)
+        section.name_idx = self.namtab.add(name)
+
+    def section_index(self, section):
+        if section in self.sectab:
+            return self.sectab.index(section)
 
     # TODO: this needs a progress callback or something...
     def write_to(self, fobj):
@@ -88,6 +186,9 @@ class DINO(object):
     def get_compressor(self, level=None):
         return get_compressor(self.compression_id, level=level)
 
+    def get_decompressor(self):
+        return get_decompressor(self.compression_id)
+
     def pack_dhdr(self):
         return Dhdrp._struct.pack(self.MAGIC,
                                   self.VERSION,
@@ -97,12 +198,14 @@ class DINO(object):
                                   self.compression_id,
                                   self.compression_opts,
                                   0, # reserved, always 0
-                                  self.sectab.count(),
-                                  self.sectab.size(),
+                                  len(self.sectab),
+                                  len(self.sectab) * Shdrp.structsize,
                                   self.namtab.size())
 
     def pack_hdrs(self):
-        return self.pack_dhdr() + self.sectab.pack() + self.namtab.pack()
+        return (self.pack_dhdr() +
+                b''.join(sec.pack_hdr() for sec in self.sectab) +
+                self.namtab.pack())
 
     def hdrsize(self):
         return Dhdrp._struct.size + self.sectab.size() + self.namtab.size()

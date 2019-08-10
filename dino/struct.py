@@ -2,13 +2,19 @@
 
 from bisect import bisect_left
 
-from .structparse import StructParser
+from .structparse import StructParser, HOST_ENDIAN
 from .const import MAGIC_V0, Arch, HeaderEncoding, ObjectType, CompressionID
 from .const import SectionType, SectionFlags
 
+__all__ = [
+    'Dhdrp',
+    'Shdrp',
+    'StringTable',
+]
+
 # Make StructParser objects for the things we know about
-Dhdrp = StructParser('Dhdr')
-Dhdrp.add_field("magic",            "I", choices=(MAGIC_V0,), default=MAGIC_V0)
+Dhdrp = StructParser('Dhdr', endian='little')
+Dhdrp.add_field("magic",           "4s", choices=(MAGIC_V0,), default=MAGIC_V0)
 Dhdrp.add_field("version",          "B", choices=(0,),        default=0)
 Dhdrp.add_field("arch",             "B", type=Arch,           default=0)
 Dhdrp.add_field("encoding",         "B", type=HeaderEncoding, default=0)
@@ -20,7 +26,7 @@ Dhdrp.add_field("section_count",    "B")
 Dhdrp.add_field("sectab_size",      "H")
 Dhdrp.add_field("namtab_size",      "H")
 
-Shdrp = StructParser('Shdr')
+Shdrp = StructParser('Shdr', endian='little')
 # TODO: we could rearrange this and have name be a 32-bit "id" field, and
 # reserve 0xffff0000-0xffffffff so if id & 0xffff0000 then the "name" is
 # Nametable.get(s.id & 0x0000ffff)
@@ -30,6 +36,7 @@ Shdrp.add_field("flags",    "B", type=SectionFlags, default=0)
 Shdrp.add_field("info",     "I", default=0)
 Shdrp.add_field("size",     "I", default=0)
 Shdrp.add_field("count",    "I", default=0)
+
 
 assert Shdrp.structsize == 16, f"Shdrp.structsize = {Shdrp.structsize}"
 assert Dhdrp.structsize == 16, f"Dhdrp.structsize = {Dhdrp.structsize}"
@@ -45,9 +52,9 @@ assert Dhdrp.structsize == 16, f"Dhdrp.structsize = {Dhdrp.structsize}"
 class StringTable(object):
     # Really more of a heap/bag/set than a Table, but that's what ELF calls
     # it, so let's not confuse things...
-    def __init__(self):
-        self._data = bytearray()
-        self._ends = list()
+    def __init__(self, data=None):
+        self._data = data or bytearray()
+        self._ends = list(self.iter_ends())
 
     def size(self):
         return len(self._data)
@@ -62,9 +69,10 @@ class StringTable(object):
         return i
 
     def get(self, i):
-        # find the range of bytes from i to the nearest string ending
-        b = self._data[i:self._ends[bisect_left(self._ends,i)]]
-        return b.decode('utf8')
+        if i < self.size():
+            # find the range of bytes from i to the nearest string ending
+            b = self._data[i:self._ends[bisect_left(self._ends,i)]]
+            return b.decode('utf8')
 
     def pack(self):
         return bytes(self._data)
@@ -77,45 +85,3 @@ class StringTable(object):
                 break
             yield end
             start = end + 1
-
-    def from_bytes(self, b):
-        self._data = b
-        self._ends = list(self.iter_ends())
-
-# TODO: this seems.. inelegant. It doesn't really do a whole lot more than
-# a normal list(). Maybe this logic should all move into the toplevel
-# DINO object or down into the Section objects themselves, as appropriate..
-class SectionTable(object):
-    _parser = Shdrp
-    _struct = _parser._struct
-
-    def __init__(self):
-        self.entries = list()
-
-    def __iter__(self):
-        return iter(self.entries)
-
-    def __getitem__(self, idx):
-        return self.entries[idx]
-
-    def index(self, section):
-        return self.entries.index(section)
-
-    def add(self, section):
-        index = self.count()
-        self.entries.append(section)
-        section._sectab = self # TODO: Again, this seems.. inelegant.
-        return index
-
-    def count(self):
-        return len(self.entries)
-
-    def size(self):
-        # NOTE: if we move to variable-length records this will need fixing
-        return self.count() * self._struct.size
-
-    def pack(self):
-        return b''.join(e.pack_hdr(self) for e in self.entries)
-
-    def write_to(self, fobj):
-        return fobj.write(self.pack())

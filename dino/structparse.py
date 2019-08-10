@@ -1,16 +1,42 @@
 # dino.structparser - like argparse and struct had a baby
 
-from struct import Struct
+import sys
+from struct import Struct, calcsize
 from collections import OrderedDict, Counter, namedtuple
+
+if sys.byteorder == 'big':
+    HOST_ENDIAN = '>'
+else:
+    HOST_ENDIAN = '<'
 
 class StructParser(object):
     '''Kind of like ArgumentParser, but for structs'''
-    def __init__(self, structname, endian="!"):
+    def __init__(self, structname, endian=HOST_ENDIAN, _LE=None, _BE=None):
         self._fieldmap = OrderedDict()
         self._structobj = None
         self._dataclass = None
         self.structname = structname
-        self.endian = endian
+        self.LE = None
+        self.BE = None
+
+        if endian == 'big':
+            endian = '>'
+        elif endian == 'little':
+            endian = '<'
+        if endian not in '<!=>':
+            raise ValueError("endian must be one of ('<', '>', '!', '=')")
+        self._endian = endian
+
+        if endian == '=':
+            endian = HOST_ENDIAN
+        if endian == '<':
+            self.LE = self
+            self.BE = _BE or self.__class__(structname, endian='>', _LE=self)
+            self.BE._fieldmap = self._fieldmap
+        else:
+            self.BE = self
+            self.LE = _LE or self.__class__(structname, endian='>', _BE=self)
+            self.LE._fieldmap = self._fieldmap
 
     class StructField(object):
         def __init__(self, name, fmt, type=None, choices=None, default=None):
@@ -26,11 +52,23 @@ class StructParser(object):
                 raise ValueError(f"{val!r} not valid for {self.name}")
             return val
 
+        def __repr__(self):
+            return (f'<'
+                    f'{self.__class__.__name__} {self.name!r}: '
+                    f'fmt={self.fmt} ({calcsize(self.fmt)})'
+                    f'{f", type={self.type.__name__}" if self.type else ""}'
+                    f'{f", type={self.default}" if self.default else ""}'
+                    f'>')
+
     def add_field(self, name, fmt, type=None, choices=None, default=None):
         self._fieldmap[name] = self.StructField(name, fmt, type, choices, default)
         # Adding a new field invalidates the cached struct/dataclass
         self._structobj = None
         self._dataclass = None
+
+    @property
+    def endian(self):
+        return self._endian
 
     @property
     def _fields(self):

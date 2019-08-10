@@ -44,6 +44,29 @@ extra_tags = OrderedDict([
 extras = namedtuple("extras", extra_tags)
 extras._tags = extras(*extra_tags.values())
 
+class cpiohdr(namedtuple("cpiohdr", "name ino mode nlink mtime size dev rdev")):
+    def _pack(self):
+        magic = 0x070701
+        name, ino, mode, nlink, mtime, size, dev, rdev = self
+        devmaj, devmin = dev >> 8, dev & 0xff
+        rdevmaj, rdevmin = rdev >> 8, rdev & 0xff
+        uid, gid = 0, 0
+        check = 0
+        if name.startswith('/'):
+            name = '.'+name
+        name = name.rstrip('\0') + '\0'
+        hdr = (f'{magic:06x}{ino:08x}{mode:08x}{uid:08x}{gid:08x}{nlink:08x}'
+               f'{mtime:08x}{size:08x}{devmaj:08x}{devmin:08x}{rdevmaj:08x}'
+               f'{rdevmin:08x}{len(name):08x}{check:08x}{name}')
+        padto = (len(hdr)+3) & ~0x3
+        hdr += '\0'*(padto-len(hdr))
+        return bytes(hdr,'utf8')
+
+    @classmethod
+    def _trailer(cls):
+        return cls('TRAILER!!!',0,0,1,0,0,0,0)
+
+
 # And here's the big fancy thing that holds all per-file RPM data
 rpmfile = namedtuple("rpmfile",
                      "name digest stat nlink fclass flags verifyflags depends extra")
@@ -241,6 +264,9 @@ class rpm(rpmhdr):
         for ex in self.zipvals(*extras._tags):
             yield {k:v for k,v in zip(extras._fields, ex) if v}
 
+    def iterlinktos(self):
+        yield from self.getval(Tag.FILELINKTOS, [])
+
     rpmfileiter = dict(
         name=iterfiles,
         digest=iterdigests,
@@ -258,7 +284,7 @@ class rpm(rpmhdr):
         Return an iterator that yields tuples of each of the rpmfile fields
         listed in `what`.
         If what == ("all",) then you get all fields - but you probably want
-        iterrpmfiles(), which yields full rpmfile objects.
+        iterrpmfiles(), which yields sensible rpmfile objects.
         '''
         # Possibly unnecessary shortcut..
         if self.nfiles() == 0:
@@ -272,7 +298,18 @@ class rpm(rpmhdr):
         Return an iterator that yields rpmfile (q.v.) objects corresponding to
         each file listed in the RPM header.
         '''
-        yield from (rpmfile(*f) for f in self.iterfileinfo())
+        yield from (rpmfile(*f) for f in self.iterfileinfo(what=rpmfile._fields))
+
+    def itercpiohdrs(self):
+        for i in zip(self.iterfiles(),
+                     self.getval(Tag.FILEINODES),
+                     self.getval(Tag.FILEMODES),
+                     self.iternlink(),
+                     self.getval(Tag.FILEMTIMES),
+                     self.getval(Tag.FILESIZES),
+                     self.getval(Tag.FILEDEVICES),
+                     self.getval(Tag.FILERDEVS)):
+            yield cpiohdr._make(i)
 
     def depnames(self):
         return [d.name for d in deptypes if self.getcount(d.nametag)]

@@ -26,9 +26,11 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from binascii import unhexlify, hexlify
+from itertools import zip_longest
+from collections import OrderedDict
 
 from rpmtoys import rpm, pkgtup, Tag, SigTag
-from rpmtoys.vercmp import rpm_evr_key
+from rpmtoys.vercmp import rpm_evr_key, pkgtup_key
 from rpmtoys.digest import gethasher, hashsize, HashAlgo
 from rpmtoys.progress import progress
 
@@ -45,28 +47,36 @@ from dino.section import RPMSection, IndexSection, FileDataSection
 # I think we need to keep track of the file _ordering_, since it might not
 # match the file ordering in the RPM headers, and the MD5 signature
 # actually (sadly) does care about the payload ordering.
-class DINORPMArchive(DINO):
-    idxalgo = DigestID.SHA256
+class DINORPMArchive(object):
+    def __init__(self, dino=None):
+        self.idxalgo = DigestID.SHA256
+        self.compression_id = CompressionID.ZSTD
+        if dino:
+            self.dino = dino
+        else:
+            self.dino = DINO(arch=Arch.NONE,
+                             compression_id=self.compression_id,
+                             objtype=ObjectType.Archive)
+            self.make_sections(self.dino)
+        self.rpmidx = self.dino.findsection(name=".rpmhdr.idx")
+        self.rpmhdr = self.rpmidx.othersec
+        self.fileidx = self.dino.findsection(name=".filedata.idx")
+        self.filedata = self.fileidx.othersec
+        self._unz = self.dino.get_decompressor()
 
-    def __init__(self, arch=Arch.NONE, compression_id=CompressionID.ZSTD):
-        DINO.__init__(self, arch=arch, compression_id=compression_id,
-                      objtype=ObjectType.Archive)
-        # TODO: this should be in the headers somewhere, right?
-        # Make sections to hold RPM header data
-        self.rpmhdr = RPMSection(flags=SectionFlags.COMPRESSED)
-        self.rpmidx = IndexSection(othersec=self.rpmhdr,
+    def make_sections(self, dino):
+            rpmhdr = RPMSection(flags=SectionFlags.COMPRESSED)
+            rpmidx = IndexSection(othersec=rpmhdr,
+                                  keysize=hashsize(self.idxalgo),
+                                  flags=SectionFlags.COMPRESSED)
+            filedata = FileDataSection(flags=SectionFlags.COMPRESSED)
+            fileidx = IndexSection(othersec=filedata,
                                    keysize=hashsize(self.idxalgo),
                                    flags=SectionFlags.COMPRESSED)
-        # Make sections to hold file data
-        self.filedata = FileDataSection(flags=SectionFlags.COMPRESSED)
-        self.fileidx = IndexSection(othersec=self.filedata,
-                                    keysize=hashsize(self.idxalgo),
-                                    flags=SectionFlags.COMPRESSED)
-        # Add the sections to the section table
-        self.add_section(self.rpmidx, name='.rpmhdr.idx')
-        self.add_section(self.rpmhdr, name='.rpmhdr')
-        self.add_section(self.fileidx, name='.filedata.idx')
-        self.add_section(self.filedata, name='.filedata')
+            dino.add_section(rpmidx, name='.rpmhdr.idx')
+            dino.add_section(rpmhdr, name='.rpmhdr')
+            dino.add_section(fileidx, name='.filedata.idx')
+            dino.add_section(filedata, name='.filedata')
 
     def rpmids(self):
         return self.rpmidx.keys()
@@ -74,34 +84,113 @@ class DINORPMArchive(DINO):
     def has_rpmid(self, key):
         return key in self.rpmidx
 
+    def get_rpmhdr(self, key):
+        off, size = self.rpmidx.get(key)
+        self.rpmhdr.fobj.seek(off)
+        hdr = self._unz.decompress(self.rpmhdr.fobj.read(size))
+        r = rpm(hdrbytes=hdr)
+        if len(hdr) > r.headersize:
+            r.payload_order = struct.iter_unpack("I", hdr[r.headersize:])
+        else:
+            r.payload_order = None
+        return r
+
+    def iter_rpmhdrs(self):
+        for k in self.rpmids():
+            yield k, self.get_rpmhdr(k)
+
+    def _write_rpm_hdrs(self, r, outf):
+        outf.write(r.make_lead()._pack())
+        # TODO: should just be dumping the sig/hdr data rather than re-packing
+        outf.write(r.sig.pack()) #FIXME: incorrect length in hdr (padding prob?)
+        outf.write(r.hdr.pack())
+
+    def _write_rpm_payload(self, r, outf):
+        # FIXME: compression stream fobj
+        #outz = get_compressor(r.getval(Tag.PAYLOADCOMPRESSOR))
+        #NOTE: current RPM default for binary RPMs is xz level -2
+        # just do it uncompressed for now...
+        outz = outf
+        inocount = dict()
+        # FIXME: check payload_order!
+        for digest, c, linkto in zip_longest(r.iterdigests(), r.itercpiohdrs(), r.iterlinktos()):
+            filekey = unhexlify(digest)
+            inocount.setdefault(c.ino, 0)
+            inocount[c.ino] += 1
+            c = c._replace(dev=0)
+            if inocount[c.ino] < c.nlink:
+                outz.write(c._replace(size=0)._pack())
+                continue
+            outz.write(c._pack())
+            wrote = 0
+            if filekey:
+                wrote = self.write_file(filekey, outz)
+            elif linkto:
+                # TODO: we shouldn't need to convert back to bytes here;
+                # we should be iterating through raw header data..
+                wrote = outz.write(bytes(linkto, 'utf8'))
+            if wrote:
+                outz.write(b'\0'*(pad4(wrote) - wrote))
+        outz.write(cpio_trailer)
+
+    def write_rpm(self, key, outf):
+        r = self.get_rpmhdr(key)
+        self.write_rpm_hdrs(r, outf)
+        self.write_rpm_payload(r, outf)
+
     def fileids(self):
         return self.fileidx.keys()
 
     def has_fileid(self, key):
         return key in self.fileidx
 
+    def write_file(self, key, outf):
+        inf = self.fileidx.othersec.fobj
+        off, size = self.fileidx.get(key)
+        inf.seek(off)
+        # XXX FIXME: copy_stream gives errors here, possibly because of frame
+        # endings? We probably don't want to uncompress the whole thing
+        # into memory at once though...
+        #read, wrote = self._unz.copy_stream(inf, outf)
+        wrote = outf.write(self._unz.decompress(inf.read(size)))
+        return wrote
 
 class VerifyError(ValueError):
     pass
 
 def rpmlister(dirs):
     '''list RPMs under topdir, grouped by .src.rpm name, sorted newest-oldest'''
-    src = dict()
     print("Finding RPMs, one moment..")
     rpmps = [p for d in dirs for p in Path(d).glob('**/*.rpm')]
-    for rpmp in progress(rpmps, prefix='Reading RPM headers ', itemfmt=lambda p: p.name):
-        r = rpm(rpmp)
-        srctup = r.srctup()
-        evr = (srctup.epoch, srctup.ver, srctup.rel)
+    # read RPM headers and get source RPM tuple for each package
+    srctup = dict()
+    for p in progress(rpmps, prefix='Reading RPM headers ', itemfmt=lambda p: p.name):
+        srctup[p] = rpm(p).srctup()
+    src = rpm_src_groupsort(srctup.items())
+    return {name:[p for pkgs in src[name].values() for p in pkgs] for name in src}
+
+def rpm_src_groupsort(srctups, reverse=True):
+    '''
+    Takes an iterable that gives (value, srctup) pairs, and returns a
+    dictionary of the form:
+        {src.name: OrderedDict(srcevr1:[value, value, ...], ...) }
+    For example, maybe you construct a dict like so:
+        rpmfile_to_srctup = {rpmfn:rpm(rpmfn).srctup() for rpmfn in repolist}
+    This function will group the RPMs by their source package name, and
+    under that is an OrderedDict where the keys are build (e,v,r) tuples and
+    the values are whatever values you passed in that came from that NEVR.
+    '''
+    src = dict()
+    for v, srctup in srctups:
+        srcevr = (srctup.epoch, srctup.ver, srctup.rel)
         src.setdefault(srctup.name, {})
-        src[srctup.name].setdefault(evr, [])
-        src[srctup.name][evr].append(rpmp)
-    rpms = dict()
-    for name in src:
-        pkgs = src[name]
-        vers = sorted(pkgs, key=rpm_evr_key, reverse=True)
-        rpms[name] = [p for v in vers for p in pkgs[v]]
-    return rpms
+        src[srctup.name].setdefault(srcevr, [])
+        src[srctup.name][srcevr].append(v)
+    for n in src:
+        srcevr_pkgs = src[n]
+        srcevrs = sorted(srcevr_pkgs, key=rpm_evr_key, reverse=reverse)
+        src[n] = OrderedDict((v, srcevr_pkgs[v]) for v in srcevrs)
+    return src
 
 # TODO: sometimes the output is larger than the input:
 #
@@ -132,6 +221,8 @@ def vprint(*args, **kwargs):
     if verbose:
         print(*args, **kwargs)
 
+# Some CPIO utility bits..
+
 def pad4(i):
     return (i+0x3)&~0x3
 
@@ -142,6 +233,12 @@ def unc_payloadsize(r):
     return (sum(pad4(112+len(f)) for f in r.iterfiles()) +
             sum(pad4(s) for s in r.getval(Tag.FILESIZES,[])) + 124)
 
+cpio_trailer = (b'0707010000000000000000000000000000000000000001000000000'
+                b'0000000000000000000000000000000000000000000000b00000000'
+                b'TRAILER!!!\x00\x00\x00\x00')
+
+
+
 # FIXME this is a long, awful mess; most of the interesting stuff here should
 # move into the dino library itself, DINORPMArchive, or more generic tools
 def merge_rpms(rpmiter, outfile):
@@ -150,9 +247,9 @@ def merge_rpms(rpmiter, outfile):
     count, rpmsize, rpmtotal = 0, 0, 0
 
     # separate contexts for compressing headers vs. files.
-    # TODO: it might be helpful if we made dictionaries for each
-    fzst = d.get_compressor(level=-1)
-    hzst = d.get_compressor(level=-1)
+    # TODO: it might be helpful if we made dictionaries for each?
+    fzst = d.dino.get_compressor(level=-1)
+    hzst = d.dino.get_compressor(level=-1)
 
     # Okay let's start adding some RPMs!
     if not verbose:
@@ -229,9 +326,10 @@ def merge_rpms(rpmiter, outfile):
                 if filekey not in d.fileidx:
                     # Write file data into its own compressed frame.
                     tmpf.seek(0)
-                    offset = tmpf.tell()
+                    offset = d.filedata.fobj.tell()
                     usize, size = fzst.copy_stream(tmpf, d.filedata.fobj, size=item.size)
                     d.fileidx.add(filekey, offset, size)
+                    assert d.filedata.fobj.tell() == offset + size
                     filecount += 1
                     filesize += size
                     unc_filesize += item.size
@@ -258,6 +356,7 @@ def merge_rpms(rpmiter, outfile):
         # Add it to the rpmhdr section
         offset = d.rpmhdr.fobj.tell()
         usize, size = hzst.copy_stream(BytesIO(hdr), d.rpmhdr.fobj, size=len(hdr))
+        assert d.rpmhdr.fobj.tell() == offset + size
         sizediff = (size+filesize)-rpmsize
         vprint(f' DINO: hdr={size:<6} files={filecount:<3} filesize={filesize}'
                f' {f"compr={filesize/unc_filesize:<6.2%}" if filesize else ""}'
@@ -277,7 +376,7 @@ def merge_rpms(rpmiter, outfile):
 
     # We did it! Write the data to the output file!
     with open(outfile, 'wb') as outf:
-        wrote = d.write_to(outf)
+        wrote = d.dino.write_to(outf)
     sizediff = wrote-rpmtotal
     print(f'packed {count} packages ({rpmtotal} bytes) into {outfile} '
           f'({sizediff/rpmtotal:<+.1%} -> {wrote} bytes)'
@@ -288,30 +387,6 @@ def merge_rpms(rpmiter, outfile):
 # This stuff should all end up in the dino module.
 class DinoError(Exception):
     pass
-
-def dino_open(filename):
-    from dino import Dhdrp, Shdrp, StringTable, MAGIC_V0
-    #import mmap
-    inf = open(filename, mode='r+b')
-    d = DINO()
-
-    # read DINO header
-    # TODO: d.from_file()
-    dhdr = Dhdrp.read1_from(inf)
-    if dhdr.magic != MAGIC_V0:
-        raise DinoError(f'{filename} has bad magic')
-
-    # read section table
-    shdrs = list(Shdrp.iter_read_from(inf, dhdr.sectab_size))
-    # TODO: d.sectab.from_bytes(inf.read(dhdr.sectab_size))
-
-    # read name table
-    d.namtab.from_bytes(inf.read(dhdr.namtab_size))
-
-    # Get the current file offset
-    offset = inf.tell()
-
-    return (d, dhdr, shdrs, offset)
 
 if __name__ == '__main__':
     # TODO: ugh real cmdline parsing come on dude
@@ -325,24 +400,30 @@ if __name__ == '__main__':
     elif len(sys.argv) == 2:
         from rpmtoys import dino # convenience for ipython
         dinofile = sys.argv[1]
-        d, dhdr, shdrs, offset = dino_open(dinofile)
-        print(f'dinofile={dinofile!r}')
-        print(f'dhdr={dhdr}')
-        print(f'shdrs=[')
-        for sh in shdrs:
-            print('  '+str(sh._replace(name=d.namtab.get(sh.name)))+',')
-        print(']')
-        print(f'offset={offset!r}')
+        inf = open(dinofile, mode='r+b')
+        d = DINORPMArchive(dino=DINO.from_file(inf))
+        print(f'{dinofile}: {d.rpmidx.count} rpms, {d.fileidx.count} files')
+        # Group the package headers by source RPM name and build version, and
+        # show each package under its respective source
+        src = rpm_src_groupsort(((r.envra,k), r.srctup()) for k, r in d.iter_rpmhdrs())
+        for name, evrpkgs in src.items():
+            for evr, pkgs in evrpkgs.items():
+                e, v, r = evr
+                print(f'build {name}-{"{e}:" if e is not None else ""}{v}-{r}')
+                for p,k in pkgs:
+                    abbr = hexlify(k[:4]).decode('ascii')
+                    print(f'  rpm {abbr} {p}')
 
     elif len(sys.argv) > 2:
         dinodir = Path(sys.argv[1])
+        rpmdirs = sys.argv[2:]
         if not dinodir.exists():
             dinodir.mkdir()
         if not dinodir.is_dir():
             print("ERROR: {dinodir} exists but isn't a directory")
             raise SystemExit(2)
         rpmcount, rpmtotal, dinocount, dinototal = 0,0,0,0
-        for name, rpms in rpmlister(sys.argv[2:]).items():
+        for name, rpms in rpmlister(rpmdirs).items():
             dinofile = (dinodir/name).with_suffix(".dino")
             print()
             rpmsize, dinosize = merge_rpms(rpms, dinofile)
@@ -351,5 +432,10 @@ if __name__ == '__main__':
             rpmtotal += rpmsize
             dinototal += dinosize
             # TODO: write index(es) into dinodir
-        print(f"read {rpmcount} packages ({rpmtotal} bytes), wrote {dinocount}"
-              f" packfiles ({dinototal} bytes, {(dinototal-rpmtotal)/rpmtotal:+.1%})")
+        if rpmtotal:
+            print(f"read {rpmcount} packages ({rpmtotal} bytes), wrote {dinocount}"
+                  f" packfiles ({dinototal} bytes, {(dinototal-rpmtotal)/rpmtotal:+.1%})")
+        else:
+            print("No RPMs in:" + "  \n".join(rpmdirs))
+            print("Nothing to do!")
+            raise SystemExit(1)

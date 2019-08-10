@@ -20,6 +20,7 @@
 import os
 import struct
 from collections import Counter, namedtuple, OrderedDict
+from io import BytesIO
 
 # These are sets of (integer) tag numbers that let us figure out whether a
 # given value should be treated as binary vs. string or array vs. scalar.
@@ -43,6 +44,8 @@ class rpmlead(namedtuple('rpmlead', 'magic major minor type arch name os sig res
     @classmethod
     def _read(cls, fobj):
         return cls._unpack(fobj.read(cls._struct.size))
+    def _pack(self):
+        return self._struct.pack(*self)
 
 
 # Read an RPM "Header Section Header" and return (tags, store):
@@ -53,9 +56,9 @@ def read_section_header(fobj, pad=False):
     idx_s = struct.Struct("! 4L")
     magic, reserved, icount, dsize = hdr_s.unpack(fobj.read(hdr_s.size))
     tags = tuple(idx_s.iter_unpack(fobj.read(icount*idx_s.size)))
-    if pad and dsize % 8:
-        dsize += 8 - (dsize % 8)
     store = fobj.read(dsize)
+    if pad and dsize % 8:
+        fobj.read(8 - (dsize % 8))
     return tags, store
 
 
@@ -142,7 +145,25 @@ class TagEntry(namedtuple("TagEntry", "tag type offset count size realsize")):
         tag, typ, off, cnt = cls._struct.unpack(data)
         return cls(tag, typ, off, cnt, None, None)
 
+RPMMAGIC = 0xedabeedb
 HDRMAGIC = 0x8eade801
+
+RPMMAGIC_BYTES = b'\xed\xab\xee\xdb'
+HDRMAGIC_BYTES = b'\x8e\xad\xe8\x01'
+
+ARCHNUM = [
+    ('x86_64', 1), ('noarch', 255), ('aarch64', 19), ('arm', 12),
+    ('ppc64', 16), ('s390x', 15), ('i686', 1), ('i386', 1), ('mips64', 11),
+    ('riscv', 22), ('mips', 4),
+    # Substrings, yecch
+    ('s390', 14), ('ppc', 5), ('sparc', 3),
+]
+
+def archnum(arch):
+    for pre, num in ARCHNUM:
+        if arch.startswith(pre):
+            return num
+    return None
 
 class HeaderError(ValueError):
     pass
@@ -157,6 +178,7 @@ class rpmsection(object):
         self.is_sig = bool(pad)
         self._bin_tags = (SIG_BIN_TAGS if self.is_sig else BIN_TAGS)
         self.size = 16 + 16*len(tagents) + len(store)
+        self.padsize = (8-len(store)%8) if pad else 0
         self.store = store
         self.tagent = OrderedDict()
         self.tagval = OrderedDict()
@@ -168,11 +190,18 @@ class rpmsection(object):
                 self.encoding = val.decode('utf-8')
         self.regiontag = self.verify_region()
 
+    @classmethod
+    def from_bytes(cls, data, pad=False):
+        from io import BytesIO
+        return cls(BytesIO(data), pad=pad)
+
+
     def pack(self):
         '''Pack this section into a bytes object'''
         idx = TagEntry._struct.pack(HDRMAGIC, 0, len(self.tagent), len(self.store))
         tagents = b''.join(te._pack() for te in self.tagent.values())
-        return idx + tagents + self.store
+        padding = b'\0' * self.padsize
+        return idx + tagents + self.store + padding
 
     def verify_region(self, regiontag=None):
         te = None
@@ -280,7 +309,7 @@ class pkgtup(namedtuple('pkgtup', 'name arch epoch ver rel')):
         if self.epoch is None:
             return self.envra()
         else:
-            return "{0.name}-{0.envra}:{0.ver}-{0.rel}.{0.arch}".format(self)
+            return "{0.name}-{0.epoch}:{0.ver}-{0.rel}.{0.arch}".format(self)
 
     __str__ = envra
 
@@ -308,8 +337,37 @@ class pkgtup(namedtuple('pkgtup', 'name arch epoch ver rel')):
 
 # Our equivalent to rpm.hdr - hold all the RPM's header data.
 class rpmhdr(object):
-    def __init__(self, filename):
+    # TODO/FIXME: we should be able to accept bytes or a fobj..
+    def __init__(self, filename=None, hdrbytes=None):
         self.name = filename
+        self.lead = None
+        self.sig = None
+        self.hdr = None
+        self.headersize = None
+        self.payloadsize = None
+        if hdrbytes:
+            self.from_hdr(hdrbytes)
+        elif filename:
+            self.read_file(self.name)
+        else:
+            raise ValueError("need filename or hdrbytes")
+
+        # Grab the pkgtup values
+        e,n,v,r,a = [self.hdr.getval(t) for t in (1003,1000,1001,1002,1022)]
+        self.pkgtup = pkgtup(n, a, e, v, r)
+        # For convenience's sake, save the package's ENVRA as a str
+        self.envra = self.pkgtup.envra()
+
+    def from_hdr(self, hdr):
+        fobj = BytesIO(hdr)
+        if hdr.startswith(RPMMAGIC_BYTES):
+            self.lead = rpmlead_read(fobj)
+        self.sig = rpmsection(fobj, pad=True)
+        self.hdr = rpmsection(fobj, pad=False)
+        self.headersize = fobj.tell()
+        self.payloadsize = None
+
+    def read_file(self, filename):
         with open(filename, 'rb') as fobj:
             self.lead = rpmlead._read(fobj)
             self.sig = rpmsection(fobj, pad=True)
@@ -317,16 +375,27 @@ class rpmhdr(object):
             self.headersize = fobj.tell()
 
         size = os.stat(filename).st_size
-        hsize = 0x60+self.sig.size+self.hdr.size
+        hsize = 0x60+self.sig.size+self.sig.padsize+self.hdr.size
         if self.headersize != hsize:
             raise HeaderError(f"headersize {self.headersize} != {hsize}")
         self.payloadsize = size - self.headersize
 
-        # Grab the pkgtup values
-        e,n,v,r,a = [self.hdr.getval(t) for t in (1003,1000,1001,1002,1022)]
-        self.pkgtup = pkgtup(n, a, e, v, r)
-        # For convenience's sake, save the package's ENVRA as a str
-        self.envra = self.pkgtup.envra()
+    def make_lead(self):
+        '''Generate a lead struct from this RPM's headers'''
+        nevr, arch = self.pkgtup.nevra().rsplit('.',1)
+        if len(nevr) < 66:
+            nevr += (66-len(nevr)) * '\0'
+        return rpmlead(
+            magic=RPMMAGIC_BYTES,
+            major=3,
+            minor=0,
+            type=0,
+            arch=archnum(arch),
+            name=bytes(nevr[:66], 'utf8'),
+            os=1,
+            sig=5,
+            res=b'\0'*16,
+        )
 
     def iterfiles(self):
         '''Yield each of the (complete) filenames in this RPM.'''
