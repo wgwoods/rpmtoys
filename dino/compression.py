@@ -4,7 +4,7 @@ from .const import CompressionID
 
 # TODO: Define a CompressionOpts structure that we can store in the header
 
-# We don't import the compression modules here because I want this module
+# We don't import the compression modules at the toplevel because I want this
 # to work even if you don't have Every Compression Library installed.
 # As long as you have the ones you actually use, we should be fine.
 
@@ -27,6 +27,15 @@ def get_compressor(which, level=None):
         cctx = lzma.LZMACompressor(preset=level)
         return cctx
     else:
-        raise ValueError(f"{which.name} not implemented!")
+        raise NotImplementedError(f"{which.name} not implemented!")
 
-
+def get_decompressor(which):
+    which = CompressionID(which)
+    if which == CompressionID.ZSTD:
+        import zstandard as zstd
+        return zstd.ZstdDecompressor()
+    elif which == CompressionID.XZ:
+        import lzma
+        return lzma.LZMADecompressor()
+    else:
+        raise NotImplementedError("{which.name} not implemented!")
