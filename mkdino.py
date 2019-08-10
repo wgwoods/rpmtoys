@@ -345,9 +345,9 @@ def merge_rpms(rpmiter, outfile):
         sigkey = r.sig.getval(SigTag.SHA256, '')
         if sigkey:
             h = gethasher(HashAlgo.SHA256)
-            h.update(hdr[r.sig.size:])
+            h.update(hdr[-r.hdr.size:])
             if sigkey != h.hexdigest():
-                raise VerifyError(f"SHA256 mismatch in {r.name}")
+                raise VerifyError(f"SHA256 mismatch in {r.name}: expected {sigkey} got {h.hexdigest()}")
 
         # Add the payload ordering
         if not payload_in_order:
