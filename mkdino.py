@@ -117,7 +117,6 @@ class DINORPMArchive(object):
             filekey = unhexlify(digest)
             inocount.setdefault(c.ino, 0)
             inocount[c.ino] += 1
-            c = c._replace(dev=0)
             if inocount[c.ino] < c.nlink:
                 outz.write(c._replace(size=0)._pack())
                 continue

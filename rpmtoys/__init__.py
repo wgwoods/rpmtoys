@@ -300,14 +300,14 @@ class rpm(rpmhdr):
         '''
         yield from (rpmfile(*f) for f in self.iterfileinfo(what=rpmfile._fields))
 
-    def itercpiohdrs(self):
+    def itercpiohdrs(self, usedev=False):
         for i in zip(self.iterfiles(),
                      self.getval(Tag.FILEINODES),
                      self.getval(Tag.FILEMODES),
                      self.iternlink(),
                      self.getval(Tag.FILEMTIMES),
                      self.getval(Tag.FILESIZES),
-                     self.getval(Tag.FILEDEVICES),
+                     self.getval(Tag.FILEDEVICES) if usedev else [0]*self.nfiles(),
                      self.getval(Tag.FILERDEVS)):
             yield cpiohdr._make(i)
 
