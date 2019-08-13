@@ -313,6 +313,9 @@ class pkgtup(namedtuple('pkgtup', 'name arch epoch ver rel')):
 
     __str__ = envra
 
+    def match(self, other):
+        return all((not s or s == o) for s,o in zip(self, other))
+
     @classmethod
     def fromenvra(cls, envra):
         epoch, c, nvra = envra.partition(':')
@@ -334,6 +337,13 @@ class pkgtup(namedtuple('pkgtup', 'name arch epoch ver rel')):
         n = nevra[:n_end]
         vra = nevra[vra_start:]
         return cls.fromenvra(e+n+vra)
+
+    @classmethod
+    def fromstr(cls, pkgstr):
+        if ':' in arg and not arg[:arg.index(':')].isdigit():
+            return cls.fromnevra(pkgstr)
+        else:
+            return cls.fromenvra(pkgstr)
 
 # Our equivalent to rpm.hdr - hold all the RPM's header data.
 class rpmhdr(object):
