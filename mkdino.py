@@ -21,6 +21,7 @@
 # * Compression is weirdly bad for certain packages (like git?)
 
 import struct
+import argparse
 
 from io import BytesIO
 from pathlib import Path
@@ -164,6 +165,9 @@ def rpmlister(dirs):
     # read RPM headers and get source RPM tuple for each package
     srctup = dict()
     for p in progress(rpmps, prefix='Reading RPM headers ', itemfmt=lambda p: p.name):
+        # TODO: we should also gather header/payload sizes and warn if we're
+        # probably going to blow up 32-bit offsets. (Or, like.. auto-split
+        # files at that point...)
         srctup[p] = rpm(p).srctup()
     src = rpm_src_groupsort(srctup.items())
     return {name:[p for pkgs in src[name].values() for p in pkgs] for name in src}
@@ -235,7 +239,6 @@ def unc_payloadsize(r):
 cpio_trailer = (b'0707010000000000000000000000000000000000000001000000000'
                 b'0000000000000000000000000000000000000000000000b00000000'
                 b'TRAILER!!!\x00\x00\x00\x00')
-
 
 
 # FIXME this is a long, awful mess; most of the interesting stuff here should
@@ -382,59 +385,177 @@ def merge_rpms(rpmiter, outfile):
           f'{" (!)" if wrote > rpmtotal else ""}')
     return rpmtotal, wrote
 
-# TODO: so yeah how do we actually open/read the files we wrote tho.
-# This stuff should all end up in the dino module.
-class DinoError(Exception):
-    pass
+class PartialKey(object):
+    def __init__(self, hex=None, bin=None):
+        self._halfbyte = False
+        if isinstance(bin, bytes):
+            self._bytes = bin
+        elif hex is not None:
+            if len(hex) & 1:
+                self._bytes = unhexlify(hex+'0')
+                self._halfbyte = True
+            else:
+                self._bytes = unhexlify(hex)
+
+    def __repr__(self):
+        h = str(self)
+        return (f'{__class__.__name__}(hex={h!r})')
+
+    def __str__(self):
+        h = hexlify(self._bytes).decode('ascii')
+        if self._halfbyte:
+            h = h[:-1]
+        return h
+
+    def match(self, key):
+        k = key[:len(self._bytes)]
+        if self._halfbyte:
+            k = k[:-1] + k[-1] & 0xf0
+        return k == self._bytes
+
+def DINOObjectName(arg):
+    # Check if it's a path
+    p = Path(arg)
+    if p.is_file():
+        return p
+    # Maybe it's a partial key?
+    try:
+        return PartialKey(hex=arg)
+    except ValueError:
+        pass
+    # Well, maybe it's an RPM NEVRA/ENVRA.
+    if '-' in arg:
+        if ':' in arg and arg[:arg.index(':')].isdigit():
+            return pkgtup.fromenvra(arg)
+        else:
+            return pkgtup.fromnevra(arg)
+    # Okay, I don't know what this is.
+    raise argparse.ArgumentTypeError(f"{arg!r} is not a filename, hex key, or RPM name")
+
+
+def make_arg_parser():
+    # Toplevel parser and global options
+    p = argparse.ArgumentParser(
+        description="make/examine .dino RPM packfiles",
+    )
+    p.add_argument("--verbose", "-v", action="store_true",
+        help="verbose output")
+    sp = p.add_subparsers(dest="cmd", metavar="COMMAND",
+        help="action to perform")
+
+    # build
+    build = sp.add_parser("build",
+        help="make a new repo or packfile")
+    build.add_argument("dinodir", metavar="DINODIR", type=Path,
+        help="output directory")
+    build.add_argument("rpmdirs", metavar="RPMDIR", nargs='+', type=Path,
+        help="directories containing RPMs")
+
+    # list
+    ls = sp.add_parser("list",
+        help="list contents of a packfile")
+    ls.add_argument("dinofile", type=Path, metavar="DINOFILE",
+        help="DINO packfile to examine")
+
+    # info
+    info = sp.add_parser("info",
+        help="get more info about packfiles and objects")
+    info.add_argument("dinofile", type=Path, metavar="DINOFILE",
+        help="DINO packfile to examine")
+    info.add_argument("object", type=DINOObjectName, metavar="OBJECT", nargs="?",
+        help="object to examine")
+
+    # extract
+    extract = sp.add_parser("extract",
+        help="extract files and other objects")
+    extract.add_argument("dinofile", type=Path, metavar="DINOFILE",
+        help="DINO packfile to examine")
+
+    return p
+
+def build_dinodir(dinodir, rpmdirs):
+    rpmcount, rpmtotal, dinocount, dinototal = 0,0,0,0
+    for name, rpms in rpmlister(rpmdirs).items():
+        dinofile = (dinodir/name).with_suffix(".dino")
+        print()
+        rpmsize, dinosize = merge_rpms(rpms, dinofile)
+        dinocount += 1
+        rpmcount += len(rpms)
+        rpmtotal += rpmsize
+        dinototal += dinosize
+        # TODO: write index(es) into dinodir
+    return rpmcount, rpmtotal, dinocount, dinototal
+
+def list_rpms(d):
+    # Group the package headers by source RPM name and build version, and
+    # show each package under its respective source
+    src = rpm_src_groupsort(((r.envra,k), r.srctup()) for k, r in d.iter_rpmhdrs())
+    for name, evrpkgs in src.items():
+        for evr, pkgs in evrpkgs.items():
+            e, v, r = evr
+            print(f'build {name}-{"{e}:" if e is not None else ""}{v}-{r}')
+            for p,k in pkgs:
+                abbr = hexlify(k[:4]).decode('ascii')
+                print(f'  rpm {abbrkey(k)} {p}')
+
+def abbrkey(k):
+    return hexlify(k[:4]).decode('ascii')
+
+def hexkey(k):
+    return hexlify(k).decode('ascii')
 
 if __name__ == '__main__':
-    # TODO: ugh real cmdline parsing come on dude
-    import sys
+    p = make_arg_parser()
+    args = p.parse_args()
+    verbose = args.verbose # TODO vprint() is silly, use logging
 
-    if len(sys.argv) < 2:
-        print("usage: mkdino.py DINODIR RPMDIR [RPMDIR..]")
-        print("or:    ipython3 -i mkdino.py DINOFILE")
-        raise SystemExit(2)
-
-    elif len(sys.argv) == 2:
-        from rpmtoys import dino # convenience for ipython
-        dinofile = sys.argv[1]
-        inf = open(dinofile, mode='r+b')
-        d = DINORPMArchive(dino=DINO.from_file(inf))
-        print(f'{dinofile}: {d.rpmidx.count} rpms, {d.fileidx.count} files')
-        # Group the package headers by source RPM name and build version, and
-        # show each package under its respective source
-        src = rpm_src_groupsort(((r.envra,k), r.srctup()) for k, r in d.iter_rpmhdrs())
-        for name, evrpkgs in src.items():
-            for evr, pkgs in evrpkgs.items():
-                e, v, r = evr
-                print(f'build {name}-{"{e}:" if e is not None else ""}{v}-{r}')
-                for p,k in pkgs:
-                    abbr = hexlify(k[:4]).decode('ascii')
-                    print(f'  rpm {abbr} {p}')
-
-    elif len(sys.argv) > 2:
-        dinodir = Path(sys.argv[1])
-        rpmdirs = sys.argv[2:]
-        if not dinodir.exists():
-            dinodir.mkdir()
-        if not dinodir.is_dir():
-            print("ERROR: {dinodir} exists but isn't a directory")
-            raise SystemExit(2)
-        rpmcount, rpmtotal, dinocount, dinototal = 0,0,0,0
-        for name, rpms in rpmlister(rpmdirs).items():
-            dinofile = (dinodir/name).with_suffix(".dino")
-            print()
-            rpmsize, dinosize = merge_rpms(rpms, dinofile)
-            dinocount += 1
-            rpmcount += len(rpms)
-            rpmtotal += rpmsize
-            dinototal += dinosize
-            # TODO: write index(es) into dinodir
+    if args.cmd == "build":
+        if not args.dinodir.exists():
+            args.dinodir.mkdir()
+        if not args.dinodir.is_dir():
+            p.error("{args.dinodir} exists but isn't a directory")
+        rpmcount, rpmtotal, dinocount, dinototal = build_dinodir(args.dinodir, args.rpmdirs)
         if rpmtotal:
             print(f"read {rpmcount} packages ({rpmtotal} bytes), wrote {dinocount}"
                   f" packfiles ({dinototal} bytes, {(dinototal-rpmtotal)/rpmtotal:+.1%})")
         else:
-            print("No RPMs in:" + "  \n".join(rpmdirs))
-            print("Nothing to do!")
-            raise SystemExit(1)
+            p.exit(1, "No RPMs found. Nothing to do!\n")
+
+    elif args.cmd == "list":
+        d = DINORPMArchive(dino=DINO.from_path(args.dinofile))
+        list_rpms(d)
+
+    elif args.cmd == "extract":
+        d = DINORPMArchive(dino=DINO.from_path(args.dinofile))
+
+    elif args.cmd == "info":
+        d = DINORPMArchive(dino=DINO.from_path(args.dinofile))
+        if args.object is None:
+            print(f'{args.dinofile}: {d.rpmidx.count} rpms, {d.fileidx.count} files')
+        if isinstance(args.object, Path):
+            print(f'STUB: list file path {args.object}')
+        elif isinstance(args.object, PartialKey):
+            partkey = args.object
+            # TODO: index sections should handle this
+            rpmkeys = [k for k in d.rpmidx.keys() if partkey.match(k)]
+            filekeys = [k for k in d.fileidx.keys() if partkey.match(k)]
+            if len(rpmkeys) + len(filekeys) > 1:
+                print("matches:")
+                for k in rpmkeys:
+                    print(f" rpm {hexkey(k)}")
+                for k in filekeys:
+                    print(f"file {hexkey(k)}")
+            elif rpmkeys:
+                r = d.get_rpmhdr(k)
+                print(f'{r.envra} {hexkey(k)}')
+                # TODO: detailed RPM info (can we do rpm -q output?)
+            elif filekeys:
+                print(f'fileid {hexkey(k)}')
+                # TODO: file size, what RPMs contain it, etc.
+            else:
+                p.exit(1, f'no match for {args.object}\n')
+        elif isinstance(args.object, pkgtup):
+            parttup = args.object
+            for k, r in d.iter_rpmhdrs():
+                if parttup.match(r.pkgtup):
+                    print(f" rpm {hexkey(k)} {r.envra}")
