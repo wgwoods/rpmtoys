@@ -3,11 +3,14 @@
 from io import BytesIO
 from struct import Struct
 from collections import Counter
+from dataclasses import dataclass
 from tempfile import SpooledTemporaryFile
+from enum import IntFlag
 
 from .util import copy_stream
 from .const import SectionFlags, SectionType, NAME_IDX_NONE
-from .struct import Shdrp
+from .varint import varint_encode, varint_iter_decode
+from .dstruct import Shdrp
 from .fileview import FileView
 
 class BaseSection(object):
@@ -45,6 +48,9 @@ class BaseSection(object):
     def info(self):
         return self._info
 
+    def _parse_info(self):
+        pass
+
     @property
     def size(self):
         return 0
@@ -72,7 +78,6 @@ class BaseSection(object):
                                   self.info,     self.size,   self.count)
 
     def write_to(self, fobj):
-        self.fobj.seek(0)
         return copy_stream(self.fobj, fobj, size=self.size)
 
     def tobytes(self):
@@ -138,6 +143,61 @@ class BlobSection(BaseSection):
         # Maybe we should just make dino objects mmap-able?
         self._data = FileView(fobj, fobj.tell(), size)
 
+    def write_to(self, fobj):
+        oldpos = self.fobj.tell()
+        self.fobj.seek(0)
+        r = copy_stream(self.fobj, fobj, size=self.size)
+        self.fobj.seek(oldpos)
+        return r
+
+class IndexFlags(IntFlag):
+    NONE     = 0
+    NoFanout = 1 << 0
+    Off64    = 1 << 1
+    UncSize  = 1 << 2
+
+@dataclass
+class IndexInfo:
+    othersec: int = 0
+    keysize: int = 0
+    fanout: bool = True
+    off64: bool = False
+    unc_size: bool = True
+
+    @property
+    def flags(self):
+        return (IndexFlags.NONE |
+                (not self.fanout and IndexFlags.NoFanout) |
+                (self.off64 and IndexFlags.Off64) |
+                (self.unc_size and IndexFlags.UncSize))
+
+    def to_int(self):
+        if self.othersec < 0 or self.othersec > 0xff:
+            raise ValueError(f"invalid othersec {self.othersec}")
+        if self.keysize < 0 or self.keysize > 0xff:
+            raise ValueError(f"invalid keysize {self.keysize}")
+        return (self.keysize | (self.othersec << 8) | (int(self.flags) << 16))
+
+    @classmethod
+    def from_int(cls, info):
+        flags = IndexFlags((info >> 16) & 0xff)
+        return cls(keysize=info & 0xff,
+                   othersec=(info >> 8) & 0xff,
+                   fanout=IndexFlags.NoFanout not in flags,
+                   off64=IndexFlags.Off64 in flags,
+                   unc_size=IndexFlags.UncSize in flags)
+
+# FIXME use logging for this!!
+DEBUG=1
+if DEBUG:
+    def dprint(*args, **kwargs):
+        print(*args, **kwargs)
+else:
+    def dprint(*args, **kwargs):
+        pass
+
+
+
 # TODO: make fanout and sizes optional
 class IndexSection(BaseSection):
     '''
@@ -146,33 +206,61 @@ class IndexSection(BaseSection):
     '''
     typeid = SectionType.Index
     datatype = dict
-    offset_sfmt = 'II'
-    fanout_sfmt = '256I'
 
-    def __init__(self, *args, othersec=None, othersec_idx=None, keysize=32, endian='<', **kwargs):
+    def __init__(self, *args, othersec=None, othersec_idx=None, keysize=32,
+                 fanout=True, off64=False, unc_size=True, varint=False,
+                 endian='<', **kwargs):
         # TODO: flag for whether or not there's a full fanout table
         #       (so we can skip it for small indexes)
-        # TODO: flag for whether we have offsets and sizes or just offsets
         # TODO: flag for varint encoding of offsets/sizes
         BaseSection.__init__(self, *args, **kwargs)
         if not (othersec_idx or isinstance(othersec, BaseSection)):
             raise ValueError("expected BaseSection, got {type(othersec)}")
-        self.keysize = keysize
+
+        # these control the output encoding and can be set/changed whenever
         self.endian = endian
+        self.fanout = fanout
+        self.varint = varint
+        # off64 is an output encoding setting that gets set automatically
+        # if a 64-bit offset/size is added
+        self._off64 = off64
+        # keysize and unc_size can't be changed once an index is created
+        self._keysize = keysize
+        self._unc_size = unc_size
+        # references to the section we're an index over
         self._othersec = othersec
         self._othersec_idx = othersec_idx
-        self._key_s = Struct(f'{self.endian}{self.keysize}s')
-        self._offset_s = Struct(f'{self.endian}{self.offset_sfmt}')
-        self._fanout_s = Struct(f'{self.endian}{self.fanout_sfmt}')
+
+        # set up
+        self._key_s = Struct(f'{self._keysize}s')
+        valfmt = ('L' if off64 else 'I') * (3 if unc_size else 2)
+        self._val_s = Struct(f'{self.endian}{valfmt}')
+        self._fanout_s = Struct(f'{self.endian}256I')
+
+        if unc_size:
+            self.add = self.add3
+        else:
+            self.add = self.add2
+
+    @property
+    def keysize(self):
+        return self._keysize
+
+    @staticmethod
+    def parse_info(info):
+        return IndexInfo.from_int(info)
 
     @classmethod
     def from_hdr(cls, shdr):
-        keysize = shdr.info & 0xff
-        othersec_idx = (shdr.info >> 8) & 0xff
+        info = cls.parse_info(shdr.info)
         return cls(name_idx=shdr.name,
                    flags=shdr.flags,
-                   keysize=keysize,
-                   othersec_idx=othersec_idx)
+                   othersec_idx=info.othersec,
+                   keysize=info.keysize,
+                   fanout=info.fanout,
+                   off64=info.off64,
+                   unc_size=info.unc_size,
+                   varint=bool(shdr.flags & SectionFlags.VARINT))
 
     @property
     def count(self):
@@ -180,13 +268,21 @@ class IndexSection(BaseSection):
 
     @property
     def size(self):
-        return (self._fanout_s.size +
-                self.count*(self._key_s.size + self._offset_s.size))
+        if self.varint:
+            return (len(self.make_fanout()) +
+                    (self.count*self.keysize) +
+                    sum(len(varint_encode(i)) for v in self.values() for i in v))
+        else:
+            return (self._fanout_s.size +
+                    self.count*(self.keysize + self._val_s.size))
 
     @property
     def info(self):
-        return ((0xff & self.keysize) |
-               ((0xff & self.othersec.idx) << 8))
+        return IndexInfo(keysize=self.keysize,
+                         othersec=self.othersec.idx if self.othersec else 0xff,
+                         fanout=self.fanout,
+                         unc_size=self._unc_size,
+                         off64=self._off64).to_int()
 
     @property
     def othersec(self):
@@ -210,29 +306,61 @@ class IndexSection(BaseSection):
     def __contains__(self, key):
         return key in self._data
 
-    def add(self, key, offset, size):
+    def add2(self, key, offset, size):
         self._data[self._key_s.pack(key)] = (offset, size)
+
+    def add3(self, key, offset, size, uncsize):
+        self._data[self._key_s.pack(key)] = (offset, size, uncsize)
 
     def remove(self, key):
         del self._data[key]
 
     def make_fanout(self):
         counts = Counter(k[0] for k in self.keys())
-        fanout = [0] * 257
-        for i in range(256):
-            fanout[i+1] = fanout[i] + counts[i]
-        return self._fanout_s.pack(*fanout[1:])
+        if self.varint:
+            # varint-encoded fanout just gives the counts for each byte
+            return self._varint_pack(*[counts[b] for b in range(256)])
+        else:
+            fanout = [0] * 257
+            for i in range(256):
+                fanout[i+1] = fanout[i] + counts[i]
+            return self._fanout_s.pack(*fanout[1:])
+
+    def _varint_pack(self, *values):
+        return b''.join(varint_encode(i) for i in values)
+
+    @property
+    def keysize(self):
+        return self._key_s.size
 
     def write_to(self, fobj):
         if self.count == 0:
             return 0
-        # TODO: if count is small we should skip fanout..
-        wrote = fobj.write(self.make_fanout())
-        keys, offsets = zip(*(sorted(self.items())))
+        dprint(f"writing index: fanout={self.fanout} varint={self.varint} "
+               f"unc_size={self._unc_size} keysize={self.keysize} "
+               f"count={self.count}")
+        wrote = 0
+        if self.fanout:
+            wrote += fobj.write(self.make_fanout())
+        keys, vals = zip(*(sorted(self.items())))
+        dprint(f"  fanout: {wrote:7} bytes")
+
+        prevpos = wrote
         for k in keys:
             wrote += fobj.write(self._key_s.pack(k))
-        for o in offsets:
-            wrote += fobj.write(self._offset_s.pack(*o))
+        dprint(f"    keys: {wrote-prevpos:7} bytes")
+
+        if self.varint:
+            valpack = self._varint_pack
+        else:
+            valpack = self._val_s.pack
+
+        prevpos = wrote
+        for v in vals:
+            wrote += fobj.write(valpack(*v))
+        dprint(f"    vals: {wrote-prevpos:7} bytes")
+        dprint(f"   total: {wrote:7} bytes")
+
         return wrote
 
     def from_file(self, fobj, size, count=0):
@@ -245,13 +373,45 @@ class IndexSection(BaseSection):
         if size == 0:
             self._data = self.datatype()
             return
-        fanout = self._fanout_s.unpack(fobj.read(self._fanout_s.size))
-        keycount = fanout[-1]
-        if count:
-            assert keycount == count
-        keys = [i[0] for i in self._key_s.iter_unpack(fobj.read(self.keysize*keycount))]
-        offs = self._offset_s.iter_unpack(fobj.read(self._offset_s.size * keycount))
-        self._data = self.datatype(zip(keys, offs))
+
+        dprint(f"reading index: fanout={self.fanout} varint={self.varint} "
+               f"unc_size={self._unc_size} keysize={self.keysize} "
+               f"count={self.count}")
+
+        data = fobj.read(size)
+        keypos = 0
+        if self.fanout:
+            if self.varint:
+                # NOTE: varint-encoded fanout is a sequence of counts, not a
+                # running count..
+                fv = 0
+                for v, n in varint_iter_decode(data, 256):
+                    fv += v
+                    keypos += n
+                    fanout.append(fv)
+            else:
+                keypos = self._fanout_s.size
+                fanout = self._fanout_s.unpack(data[0:keypos])
+            if count:
+                assert count == fanout[-1]
+            dprint(f"  fanout: {keypos:7} bytes, count={fanout[-1]}")
+        keylen = self.keysize * count
+        valpos = keypos + keylen
+        keydata = data[keypos:valpos]
+        valdata = data[valpos:]
+        dprint(f"    keys: {valpos-keypos:7} bytes")
+        dprint(f"    vals: {len(valdata):7} bytes")
+        keys = [i[0] for i in self._key_s.iter_unpack(keydata)]
+        if self.varint:
+            vals = [i[0] for i in varint_iter_decode(valdata)]
+            n, m = divmod(len(vals), count)
+            assert (m == 0), "Incorrect/corrupt index"
+            vals = [tuple(vals[i:i+n]) for i in range(0,len(vals),n)]
+        else:
+            if (len(valdata) % self._val_s.size):
+                print(f"wtf: size {self._val_s.size} * count {count} != {len(valdata)}")
+            vals = self._val_s.iter_unpack(valdata)
+        self._data = self.datatype(zip(keys, vals))
 
 class RPMSection(BlobSection):
     '''A section containing one or more RPM headers.'''

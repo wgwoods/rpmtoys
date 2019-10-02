@@ -53,12 +53,22 @@ class Arch(IntEnum):
     RISCV   = 243
 
 class HeaderEncoding(IntFlag):
-    LE          = 0b00000000 # Little-endian is the default; no bit set
-    BE          = 0b00000001 # Big-endian
-    OFF64       = 0b00000010 # TODO: 64-bit sizes/offsets
+    # Endianness could be a single bit - 0=LE, 1=BE - but I'd prefer that an
+    # empty value be invalid, to reduce the probability that garbage data will
+    # be interpreted as valid. So instead we'll use the low two bits to store
+    # one of two valid ELF EI_DATA values - LSB=1, MSB=2.
+    # Anything else is invalid and should be rejected.
+    INVALID     = 0b00000000 # No bits set! Invalid!
+    LE          = 0b00000001 # Little-endian (our default)
+    BE          = 0b00000010 # Big-endian
+    SEC64       = 0b00000100 # 64-bit sizes/offsets in sectab
 
     def byteorder(self):
-        return self & 0b1
+        bo = self & 0b11
+        if bo == 0b11:
+            return self.INVALID
+        else:
+            return bo
 
     def endian(self):
         return '>' if self.byteorder() == self.BE else '<'
@@ -121,3 +131,4 @@ class SectionType(IntEnum):
 class SectionFlags(IntFlag):
     NONE       = 0b00000000
     COMPRESSED = 0b00000001
+    VARINT     = 0b00000010

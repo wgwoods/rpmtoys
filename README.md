@@ -18,6 +18,24 @@ Should work anywhere with POSIX `sh`, POSIX.2 `od`, and either a `sh`-builtin
 Python module used by scripts here. Includes low-level pure-Python RPM header
 parsing and RPM tag metadata! Fun!
 
+## `dino/`
+
+A Python module (that uses `rpmtoys`) I'm using for prototyping the
+work-in-progress [DINO] package repo/packfile format.
+
+## `mkdino.py`
+
+A simple CLI to build [DINO] packfiles out of sets of RPMs, extract RPMs from
+packfiles, examine packfile contents, etc.
+
+Requirements:
+
+* [python-libarchive-c]: `dnf install python3-libarchive-c` or `pip-3 install python-libarchive-c`
+* [zstandard]: `pip-3 install zstandard`
+
+[python-libarchive-c]: https://github.com/Changaco/python-libarchive-c
+[DINO]: https://github.com/wgwoods/libdino
+
 ## `measure-metadata.py`
 
 A script to examine actual RPM headers and determine the amount of space used

@@ -32,7 +32,7 @@ KNOWN BUGS/LIMITATIONS:
 
 from .const import *
 from .section import *
-from .struct import Dhdrp, Shdrp, StringTable
+from .dstruct import Dhdrp, Shdrp, StringTable
 from .compression import get_compressor, get_decompressor
 
 # This only exports the public-facing stuff enums and classes.
@@ -178,12 +178,14 @@ class DINO(object):
     # TODO: this needs a progress callback or something...
     def write_to(self, fobj):
         wrote = fobj.write(self.pack_hdrs())
-        for n,(name,sec) in enumerate(self.sections()):
-            # FIXME: pass through the compressor?
+        for sec in self.sectab:
+            # FIXME: pass through the compressor if that flag is set
+            # compr = self.get_compressor()
             wrote += sec.write_to(fobj)
         return wrote
 
     def get_compressor(self, level=None):
+        # TODO: compression_opts!
         return get_compressor(self.compression_id, level=level)
 
     def get_decompressor(self):

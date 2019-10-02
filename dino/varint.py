@@ -6,6 +6,7 @@ __all__ = [
     'VARINT_MAXVAL_WIDTH',
     'varint_encode',
     'varint_decode',
+    'varint_iter_decode',
 ]
 
 from ctypes import c_ulonglong as uintmax
@@ -47,16 +48,28 @@ def varint_encode(val):
 
 def varint_decode(varint):
     '''Decode the varint byte sequence and return (val, nbytes)'''
-    n = 0
-    val = varint[n] & 127
-    while (varint[n] & 128):
+    b = varint[0]
+    val = b & 127
+    n = 1
+    while (b & 128):
         if (val & VARINT_MS7B_MASK):
             raise ValueError("varint overflow")
         val += 1
+        b = varint[n]
         n += 1
-        val = (val << 7) + (varint[n] & 127)
+        val = (val << 7) + (b & 127)
     return val, n
 
+def varint_iter_decode(data, maxcount=None):
+    end = len(data)
+    itemsleft = maxcount if maxcount else end
+    data = memoryview(data)
+    pos = 0
+    while itemsleft and pos < end:
+        val, size = varint_decode(data[pos:])
+        yield val, size
+        pos += size
+        itemsleft -= 1
 
 def varint_str(varint):
     varint_bytes = [f"{'+' if b & 128 else '.'}{b&127:02x}" for b in varint]
@@ -65,6 +78,7 @@ def varint_str(varint):
 
 if __name__ == '__main__':
     assert (varint_encode(0) == b'\0'), "varint_encode(0) != b'\0'"
+    assert (varint_decode(b'\0') == (0,1))
     assert (varint_encode(127) == b'\x7f')
     varint = varint_encode(128)
     varexp = b'\x80\x00'
@@ -74,10 +88,12 @@ if __name__ == '__main__':
         vnext = varint_encode(val + 1)
         assert (len(vmax) == width)
         assert (len(vnext) == width + 1)
-        d_vmax, _ = varint_decode(vmax)
-        d_vnext, _ = varint_decode(vnext)
+        d_vmax, w_vmax = varint_decode(vmax)
+        d_vnext, w_vnext = varint_decode(vnext)
         assert (d_vmax == val), f'{d_vmax} != {val}'
         assert (d_vnext == val + 1), f'{d_vnext} != {val+1}'
+        assert (w_vmax == width)
+        assert (w_vnext == width + 1)
 
     vmax = varint_encode(VARINT_MAXVAL)
     assert(len(vmax) == VARINT_MAXLEN)
