@@ -133,6 +133,7 @@ magic2ext() {
         fd377a58) echo xz ;;    # 0xfd "7zX"
         4c5a4950) echo lz ;;    # "LZIP"
         4c5a5249) echo lrz ;;   # "LRZI"
+        2?b52ffd) echo zst ;;   # 0xFD2FB52?, but little-endian
         30373037) echo cpio ;;  # "0707"
         75737461) echo tar ;;   # "usta"
         *) echo unk ;;
