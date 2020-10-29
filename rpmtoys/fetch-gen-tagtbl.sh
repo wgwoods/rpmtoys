@@ -1,6 +1,6 @@
 #!/bin/sh
 RPM_SRC_URL=https://github.com/rpm-software-management/rpm/raw/
-VERSION="${1:-master}"
+VERSION="${1:-rpm-4.16.0-release}"
 
 tmpdir=$(mktemp --tmpdir -d fetch-gen-tagtbl.XXXXXXXXXX)
 if [ -d $tmpdir ]; then
