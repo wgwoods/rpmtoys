@@ -152,7 +152,7 @@ SIGNATURE_SIGTAGS = {SigTag.PGP, SigTag.GPG, SigTag.DSA, SigTag.RSA}
 DIGEST_SIGTAGS = {SigTag.MD5, SigTag.SHA1, SigTag.SHA256}
 
 # Lovingly handcrafted tag groupings.
-# This covers every tag known to rpm-4.14.1. Whee!
+# This covers every tag known to rpm-4.16.0. Whee!
 tag_group = {name:{Tag(t) for t in grp} for (name, grp) in {
     "FILEDIGESTS": {1035, 5011},
     "FILENAMES":   {1116, 1117, 1118, 5000},
@@ -165,9 +165,10 @@ tag_group = {name:{Tag(t) for t in grp} for (name, grp) in {
     "RPMFILEMD":   {1045, 1097, 1098, 1099, 1140, 1037},
     "BUILDMD":     {1132, 1122, 1044, 1007, 1006, 1022, 1021, 1106, 1146},
     "DISTROMD":    {1010, 1011, 1015, 1123, 1155},
+    "MODULEMD":    {5096},
     "PACKAGEINFO": {1000, 1001, 1002, 1003, 1004, 1005, 1014, 1016, 1020,
                     5012, 5019, 5034},
-    "PAYLOADMD":   {1009, 1046, 1124, 1125, 1126, 5009, 5092, 5093},
+    "PAYLOADMD":   {1009, 1046, 1124, 1125, 1126, 5009, 5092, 5093, 5097},
     "IMAGES":      {1012, 1013, 1043},
     "NEVRAS":      {1196, 5013, 5014, 5015, 5016},
     "SRPM":        {1018, 1019, 1051, 1052, 1059, 1060, 1061, 1062, 1089},
@@ -180,6 +181,9 @@ tag_group = {name:{Tag(t) for t in grp} for (name, grp) in {
     "DEPENDENCY":  Tag.byprefix(DEPENDENCY_NAMES),
     "SCRIPTLET":   Tag.byprefix(SCRIPTLET_NAMES),
 }.items()}
+
+# And the catch-all for any Tag that's not already in another tag_group
+tag_group["UNGROUPED"] = set(Tag).difference(*tag_group.values())
 
 # Map {int/Tag:groupname}
 groupname = {t:name for (name, grp) in tag_group.items() for t in grp}
