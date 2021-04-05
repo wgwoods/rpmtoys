@@ -23,6 +23,16 @@ stuff.
   * glibc, kernel, systemd
 * Big app with frequent updates
   * libreoffice
+* Packages that had day-2 updates on my F33 workstation:
+  * Large-ish packages with few files:
+    * nodejs-libs      (43MB, 10 files)
+    * nodejs-full-i18n (28MB, 2 files)
+    * llvm-libs        (87MB, 19 files)
+  * Largest packages:
+    * containerd  (135MB, 53 files)
+    * firefox     (255MB, 204 files)
+    * ansible     (102MB, 17851 files)
+    * nodejs-docs (62MB,  794 files)
 
 ## Interesting metadata
 

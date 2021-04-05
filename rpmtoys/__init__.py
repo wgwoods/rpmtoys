@@ -89,6 +89,10 @@ class rpm(rpmhdr):
         }
 
     def payload_iter(self):
+        '''
+        Iterate through the files in the RPM payload using libarchive.
+        Yields a libarchive.ArchiveEntry for each file in the payload.
+        '''
         from libarchive import stream_reader
         with self.open_payload() as payload_fobj:
             with stream_reader(payload_fobj,
@@ -155,15 +159,10 @@ class rpm(rpmhdr):
     def checkdigests(self, hdr=True, payload=True, filedigests=True):
         '''
         Check RPM package/file/payload digests against expected values.
-        An RPM's signature header can
-        contain the following digests (see `digest()`):
+        An RPM's signature header can contain the following digests:
             sha1:   SHA1 of the hdr section
             sha256: SHA256 of the hdr section
-            md5:    MD5 of the hdr section + payload
-
-        The RPM hdr can also contain the FILEDIGESTS tag, which will have
-        digests of each file in the payload. The digest algorithm is specified
-        by the FILEDIGESTALGO tag.
+            md5:    MD5 of the hdr section & payload (obsolete, deprecated)
         '''
         result = dict()
         if hdr or payload:
@@ -194,9 +193,16 @@ class rpm(rpmhdr):
         raise NotImplementedError
 
     def iterdigestfiles(self, algo=None):
+        '''
+        Iterate through the payload files and calculate digests for each one.
+        If `algo` is None, uses the algorithm in the rpm's FILEDIGESTALGO tag.
+        Yields (name, hexdigest) pairs for each file in the payload.
+        '''
         if algo is None:
             algo = self.hdr.getval(Tag.FILEDIGESTALGO)
         for e in self.payload_iter():
+            # TODO: if we can also get the raw headers, we could calculate
+            # PAYLOADDIGESTALT at the same time..
             if e.isreg:
                 h = gethasher(algo)
                 for block in e.get_blocks():
@@ -204,10 +210,16 @@ class rpm(rpmhdr):
                 yield (e.name[1:], h.hexdigest())
 
     def checkfiledigests(self):
+        '''
+        The RPM hdr can also contain the FILEDIGESTS tag, which will have
+        digests of each file in the payload. The digest algorithm is specified
+        by the FILEDIGESTALGO tag.
+        '''
         dig = dict(zip(self.iterfiles(), self.getval(Tag.FILEDIGESTS)))
         return {n:dig.get(n)==d for n,d in self.iterdigestfiles()}
 
     def nfiles(self):
+        '''Return a count of the number of files in the package.'''
         return self.getcount(Tag.BASENAMES)
 
     def iterfiles(self):
