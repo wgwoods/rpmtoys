@@ -12,7 +12,9 @@
 # not have the latest librpm available.
 
 import re
-
+import json
+import argparse
+from collections import namedtuple
 
 # These are the typecodes used in the per-tag comments in rpmtag.h, and the
 # corresponding rpmTagType and rpmTagReturnType.
@@ -41,20 +43,29 @@ RPMTYPECODE = {
 # * The others are not used in the code; they're purely informational.
 FLAGWORDS = {
     'internal', 'unimplemented', 'extension',
-    'unused', 'deprecated', 'obsolete',
+    'unused', 'deprecated', 'obsolete', 'hidden',
 }
 
-# Here we have single-letter codes for the flags. "unused" and "unimplemented"
-# are intentionally folded into each other.
+# Here we have single-letter codes for the flags.
+# "unused" and "unimplemented" are intentionally folded into each other,
+# as are "obsolete" and "deprecated".
 FLAGCODES = {
     'internal':      'i',
     'unimplemented': 'u',
     'extension':     'e',
     'unused':        'u',
     'deprecated':    'd',
-    'obsolete':      'o',
+    'obsolete':      'd',
+    'hidden':        'h',
 }
 
+CODE2FLAG = {
+    'i': 'internal',
+    'u': 'unimplemented',
+    'e': 'extension',
+    'd': 'deprecated',
+    'h': 'hidden',
+}
 
 # Known tag/define prefixes, with short abbreviations
 GRP_NAME = {
@@ -66,8 +77,8 @@ GRP_NAME = {
 
 
 # Regexes for relevant C #defines and enum items in rpmtag.h, in verbose form:
-#ENUMPAT = r'^         \s+ ([A-Z]+_\w+) \s+ = \s+ ([^,/]+)'
-#DEFPAT  = r'^\#define \s+ ([A-Z]+_\w+) \s+       ([^,/]+)'
+ENUMPAT = r'^         \s+ ([A-Z]+_\w+) \s+ = \s+ ([^,/]+) ,?'
+DEFPAT  = r'^\#define \s+ ([A-Z]+_\w+) \s+       ([^,/]+)'
 
 # But hey! Instead of trying to match each line twice, we can merge those to
 # make a single regex that matches both #define and enum lines.
@@ -78,8 +89,20 @@ TAGPAT = r'^(\#define)? \s+ ([A-Z]+_\w+) \s+ (?:= \s+)? ([^,/]+?) ,?'
 # Regex that matches optional C comment that ends at EOL
 COMMENT = r'(?:\s*/\*\S*\s+(.*)\s+\S*\*/)?$'
 
-# Compiled pattern for matching tags in rpmtag.h
+# Compiled patterns for matching tags in rpmtag.h
 RPMTAG_RE = re.compile(TAGPAT+COMMENT, re.MULTILINE|re.VERBOSE)
+ENUM_RE = re.compile(ENUMPAT+COMMENT, re.VERBOSE)
+DEF_RE = re.compile(DEFPAT+COMMENT, re.VERBOSE)
+
+class TagLineMatch(namedtuple("TagLineMatch", "isdef name expr comment")):
+    @property
+    def sym(self):
+        return self.expr if self.isdef else self.name
+
+class TagTableItem(namedtuple("TagTableItem", "prefix shortname id typecode flags")):
+    @property
+    def grp(self):
+        return GRP_NAME.get(self.prefix)
 
 # The actual parsing function.
 def iterparse_rpmtag_h(rpmtag_h):
@@ -93,10 +116,12 @@ def iterparse_rpmtag_h(rpmtag_h):
     - look for any RPMTYPECODE key at the start of the comment
     - look for other FLAGWORDS in the comment (as a set)
 
-    and yield a tuple:
-        (prefix, shortname, expr, val, typecode, flags, comment)
+    and yield a (item, match) pair, where each is a namedtuple:
+        match = TagLineMatch(isdef, name, expr, comment)
+        item = TagTableItem(prefix, shortname, id, typecode, flags)
 
-    val is an int.
+    isdef is a bool.
+    id is an int.
     typecode is one of the keys in RPMTYPECODE (and may be None).
     flags is a set, and a subset of FLAGWORDS (and may be empty).
     '''
@@ -128,45 +153,87 @@ def iterparse_rpmtag_h(rpmtag_h):
         # Re-split comment, stripping all non-word chars, to find flagwords.
         flags = FLAGWORDS.intersection(re.split(r'\W+', comment))
 
-        yield name, expr, val, typecode, flags, bool(isdef), comment
+        match = TagLineMatch(bool(isdef), name, expr, comment)
+        item = TagTableItem(prefix, shortname, val, typecode, flags)
 
+        yield item, match
 
-def dump_tagtbl_txt_compact(rpmtag_h):
-    '''Parse rpmtag.h and generate a simple/compact tagtbl.txt format.'''
-    tagnames = {grp:{} for grp in GRP_NAME.values()}
-    for name, expr, val, typecode, flags, isdef, _ in iterparse_rpmtag_h(rpmtag_h):
-        pre, sn = name.split('_', 1)
-        typecode = typecode or "-"
-        charflags = ''.join(sorted(set(FLAGCODES[f] for f in flags))) or "-"
-        grp = GRP_NAME.get(pre)
-        if not grp:
-            continue
-        print(f'{grp:3}  {val:<7}  {sn:30}  {typecode:3}  {charflags:3}')
-
-
-def dump_tagtbl_txt(rpmtag_h):
+# Find & filter out aliases in the parsed output.
+def generate_tagtbl_items(rpmtag_h):
     '''
-    Parse rpmtag.h and generate a tagtbl.txt with special handling for
-    aliased names.
+    Parse rpmtag.h, keeping tag alias names as separate items.
+    Yields pairs: (tag: TagTableItem, aliases: List[str])
     '''
-    taginfo = {grp:{} for grp in GRP_NAME.values()}
-    for name, expr, val, typecode, flags, isdef, _ in iterparse_rpmtag_h(rpmtag_h):
-        pre, sn = name.split('_', 1)
-        typecode = typecode or "-"
-        grp = GRP_NAME.get(pre)
-        if not grp:
-            continue
-        if val not in taginfo[grp]:
-            taginfo[grp][val] = [sn, typecode, flags]
-        else:
-            taginfo[grp][val].append(sn)
+    buf, aliases = None, []
 
-    for grp, grpinfo in taginfo.items():
-        for val, (sn, typecode, flags, *aliases) in grpinfo.items():
-            if aliases:
-                flags.add(f'alias={",".join(aliases)}')
-            outstr = f'{grp:3}  {val:<7}  {sn:30}  {typecode:3}  {" ".join(sorted(flags)) or "-"}'
-            print(outstr)
+    for item, _ in iterparse_rpmtag_h(rpmtag_h):
+        if not item.grp:
+            continue
+        # If we see the same group/val as before, it's an alias
+        if buf and (item.grp, item.id) == (buf.grp, buf.id):
+            aliases.append(item.shortname)
+            continue
+        if buf:
+            yield buf, aliases
+        buf, aliases = item, []
+
+    if buf:
+        yield buf, aliases
+
+
+def dump_tagtbl_json(rpmtag_h, indent=2):
+    '''
+    Parse rpmtag.h and generate tagtbl.json, a more verbose, more portable
+    format than tagtbl.C or tagtbl.txt. Example output:
+    {
+      "TAG": [
+        {
+          "shortname": "NAME",
+          "id": 1000,
+          "typecode": "s",
+          "flags": [],
+          "aliases": ["N"]
+        }
+      ]
+    }
+
+    Note that `typecode` may be null.
+    '''
+    taginfo = {}
+    for tag, aliases in generate_tagtbl_items(rpmtag_h):
+        # replace flags with a list (sets aren't serializable) and make a dict
+        d = tag._replace(flags=list(tag.flags))._asdict()
+        d["aliases"] = aliases
+        d.pop("prefix")
+        taginfo.setdefault(tag.grp, []).append(d)
+    print(json.dumps(taginfo, indent=indent))
+
+
+def dump_tagtbl_txt(rpmtag_h, normalize_flags=True):
+    '''
+    Parse rpmtag.h and generate tagtbl.txt, a simple text-based format.
+    Example output:
+
+        TAG  1000     NAME                            s    alias=N
+        TAG  1032     FILEGIDS                        i[]  deprecated internal
+        TAG  1033     FILERDEVS                       h[]  -
+        TAG  1054     CONFLICTNAME                    s[]  alias=CONFLICTS,C
+
+    Each line will have 5 or more items: (group, id, name, typecode, *extra)
+
+    Items in `extra` can be one of the FLAGWORDS, or "alias=" (followed by a
+    comma-separated list of aliases for this tag).
+
+    '-' will be used as a placeholder when `typecode` or `flags` is empty.
+    '''
+    for tag, aliases in generate_tagtbl_items(rpmtag_h):
+        flags = tag.flags
+        if normalize_flags:
+            flags = set(CODE2FLAG[FLAGCODES[f]] for f in tag.flags)
+        if aliases:
+            flags.add(f'alias={",".join(aliases)}')
+        outstr = f'{tag.grp:3}  {tag.id:<7}  {tag.shortname:30}  {tag.typecode or "-":3}  {" ".join(sorted(flags)) or "-"}'
+        print(outstr)
 
 
 def dump_tagtbl_C(rpmtag_h):
@@ -177,19 +244,17 @@ def dump_tagtbl_C(rpmtag_h):
         AWK=awk LC_ALL=C gentagtbl.sh rpmtag.h
     '''
     items = []
-    for name, expr, val, typecode, flags, isdef, _ in iterparse_rpmtag_h(rpmtag_h):
+    for item, match in iterparse_rpmtag_h(rpmtag_h):
         # Only match names starting with RPMTAG_ and _no_ other underscores.
-        pre, sn = name.split('_', 1)
-        if pre != 'RPMTAG' or '_' in sn:
+        if item.prefix != 'RPMTAG' or '_' in item.shortname:
             continue
         # Skip internal / unimplemented tags
-        if 'internal' in flags or 'unimplemented' in flags:
+        if 'internal' in item.flags or 'unimplemented' in item.flags:
             continue
         # Get typecode and extension flag (tt, ta, ext in gentagtbl.sh)
-        tt, ta = RPMTYPECODE[typecode]
-        ext = 1 if 'extension' in flags else 0
-        sym = expr if isdef else name
-        items.append(f'    {{ "{name}", "{sn.capitalize()}", {sym}, RPM_{tt}_TYPE, RPM_{ta}_RETURN_TYPE, {ext} }},')
+        tt, ta = RPMTYPECODE[item.typecode]
+        ext = 1 if 'extension' in item.flags else 0
+        items.append(f'    {{ "{match.name}", "{item.shortname.capitalize()}", {match.sym}, RPM_{tt}_TYPE, RPM_{ta}_RETURN_TYPE, {ext} }},')
 
     print('static const struct headerTagTableEntry_s rpmTagTable[] = {')
     for i in sorted(items):
@@ -197,11 +262,23 @@ def dump_tagtbl_C(rpmtag_h):
     print('    { NULL, NULL, RPMTAG_NOT_FOUND, RPM_NULL_TYPE, 0 }')
     print('};')
 
-if __name__ == '__main__':
-    # TODO: argparse...
-    import sys
 
-    if len(sys.argv) > 1:
-        rpmtag_h = open(sys.argv[1]).read()
-        dump_tagtbl_txt(rpmtag_h)
-        #dump_tagtbl_C(rpmtag_h)
+if __name__ == '__main__':
+    p = argparse.ArgumentParser(
+            description="Parse rpmtag.h and generate tables of tag info.")
+    p.add_argument("rpmtag_h",
+            type=argparse.FileType('r', encoding='utf8'),
+            help="path to rpmtag.h (or '-' for stdin)")
+    p.add_argument("-o", "--output",
+            choices=("C", "text", "json"), default="json",
+            help="output format")
+    args = p.parse_args()
+
+    rpmtagdata = args.rpmtag_h.read()
+
+    if args.output == "json":
+        dump_tagtbl_json(rpmtagdata)
+    elif args.output == "C":
+        dump_tagtbl_C(rpmtagdata)
+    elif args.output == "text":
+        dump_tagtbl_txt(rpmtagdata)
