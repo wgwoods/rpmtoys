@@ -1,9 +1,6 @@
 #!/usr/bin/python3
 # fetchbuild - fetch entire builds from koji
 
-DISTS = [".fc27", ".fc28", ".fc29", ".fc30"]
-ARCHES = ["x86_64", "noarch"]
-
 import os
 import koji
 from koji_cli.lib import download_file, _format_size
@@ -49,13 +46,51 @@ class KojiWrapper(object):
                 download_file(self.pkgurl+relpath, relpath, size=count, num=num+1,
                               quiet=quiet, noprogress=noprogress)
 
+
+from argparse import ArgumentParser
+
+def parse_args():
+    import re
+    from argparse import ArgumentParser
+
+    HOST_ARCH='x86_64' # FIXME
+    LATEST_VER='fc38' # FIXME ALSO
+
+    p = ArgumentParser(
+            prog="fetchbuild",
+            description="download builds from koji",
+        )
+    p.add_argument("packages", metavar="PKG", nargs="+",
+                   help="package names to fetch")
+    p.add_argument("--version", metavar="REGEX",
+                   type=re.compile, default='',
+                   help="only download builds that match this version")
+    p.add_argument("--arch", metavar="ARCH", action="append", dest="arches",
+                   default=[HOST_ARCH, 'noarch'],
+                   help="package arches to fetch")
+    p.add_argument("--noarch", action="store_const", const=['noarch'],
+                   help="only fetch `noarch` packages")
+    p.add_argument("--dist", metavar="DIST", action="append", dest="dists",
+                   default=[LATEST_VER],
+                   help="package dists to fetch")
+    p.add_argument("--dryrun", "-n", action="store_true",
+                   help="look up packages but do not actually download")
+    args = p.parse_args()
+    return args
+
+ANSI_RED="\x1b[91m"
+ANSI_GREEN="\x1b[92m"
+ANSI_END="\x1b[0m"
+UNICODE_OK=f"{ANSI_GREEN}\N{heavy check mark}{ANSI_END}"
+UNICODE_ERR=f"{ANSI_RED}\N{heavy ballot x}{ANSI_END}"
+
+
 if __name__ == '__main__':
-    import sys
     k = KojiWrapper()
     dl_rpms = []
-    packages = sys.argv[1:]
-    print("Finding builds for ({}), ({})".format(",".join(DISTS), ",".join(ARCHES)))
-    for pkg in packages:
+    args = parse_args()
+    print("Finding builds for ({}), ({})".format(",".join(args.dists), ",".join(args.arches)))
+    for pkg in args.packages:
         try:
             builds = k.listbuilds(pkg)
         except ValueError:
@@ -64,11 +99,20 @@ if __name__ == '__main__':
 
         print("Matching {} builds:".format(pkg))
         for build in builds:
-            if any(build['release'].endswith(d) for d in DISTS):
-                print(" {version}-{release}".format(**build), end="", flush=True)
-                dl_rpms += k.listrpms(build, arches=ARCHES)
+            if any(build['release'].endswith(d) for d in args.dists):
+                verrel = "{version}-{release}".format(**build)
+                if args.version.match(verrel):
+                    dl_rpms += k.listrpms(build, arches=args.arches)
+                    end=UNICODE_OK
+                else:
+                    end=UNICODE_ERR
+                print(" {version}-{release}".format(**build), end=end, flush=True)
         print()
 
     dl_size = sum(r['size'] for r in dl_rpms)
-    print("Downloading {} rpms ({})".format(len(dl_rpms),_format_size(dl_size)))
-    k.download_rpms(dl_rpms)
+    if args.dryrun:
+        print("Would download {} rpms ({}):".format(len(dl_rpms),_format_size(dl_size)))
+        print(*("  {nvr}.{arch}.rpm".format(**rpm) for rpm in dl_rpms), sep='\n')
+    else:
+        print("Downloading {} rpms ({})".format(len(dl_rpms),_format_size(dl_size)))
+        k.download_rpms(dl_rpms)
